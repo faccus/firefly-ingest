@@ -78,7 +78,8 @@ export default function SettingsPage() {
                   </code>
                 </td>
                 <td>→ {a.kind === "account" ? accountName(meta?.accounts.find((x) => x.name === a.value)?.id ?? null) || a.value : a.value}</td>
-                <td className="actions">
+                <td className="nowrap">
+                  <div className="actions">
                   <button
                     className="ghost small"
                     onClick={async () => {
@@ -88,6 +89,7 @@ export default function SettingsPage() {
                   >
                     Elimina
                   </button>
+                  </div>
                 </td>
               </tr>
             ))}

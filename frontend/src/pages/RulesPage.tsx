@@ -36,7 +36,8 @@ export default function RulesPage() {
           </div>
         </div>
         <p className="muted small">
-          Le regole sono applicate in ordine di priorità: ogni regola riempie solo i campi ancora vuoti. Le correzioni fatte nella revisione non vengono mai sovrascritte.
+          Le regole sono applicate in ordine di priorità: per ogni campo vince la prima regola che lo imposta. Le modifiche fatte a mano nella
+          revisione non vengono mai sovrascritte (svuota il campo per restituirlo alle regole). Nei lotti aperti usa "Riapplica regole".
         </p>
         <table className="grid">
           <thead>
@@ -75,9 +76,11 @@ export default function RulesPage() {
                     .join(" · ")}
                 </td>
                 <td>{r.hits}</td>
-                <td className="actions">
+                <td className="nowrap">
+                  <div className="actions">
                   <button className="ghost small" onClick={() => setEditing({ ...r })}>Modifica</button>
                   <button className="ghost small" onClick={() => remove(r)}>Elimina</button>
+                  </div>
                 </td>
               </tr>
             ))}

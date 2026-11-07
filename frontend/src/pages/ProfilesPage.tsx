@@ -5,7 +5,17 @@ import { AccountSelect, useMeta } from "../meta";
 function describeColumns(p: Profile): string {
   const c = p.columns;
   const amount = c.amount ? `importo: ${c.amount}` : `uscite: ${c.debit ?? "—"} / entrate: ${c.credit ?? "—"}`;
-  return [`data: ${c.date}`, amount, `descrizione: ${c.description.join(" + ") || "—"}`, c.counterparty && `controparte: ${c.counterparty}`]
+  const skip = p.options?.status_skip?.length ? ` (esclude ${p.options.status_skip.join(", ")})` : "";
+  return [
+    `data: ${c.date}`,
+    amount,
+    `descrizione: ${c.description.join(" + ") || "—"}`,
+    c.counterparty && `controparte: ${c.counterparty}`,
+    c.notes && `note: ${c.notes}`,
+    c.account && `conto per riga: ${c.account}`,
+    c.status && `stato: ${c.status}${skip}`,
+    c.category && `categoria banca: ${c.category}${p.options?.use_bank_category ? "" : " (non usata)"}`,
+  ]
     .filter(Boolean)
     .join(" · ");
 }
@@ -129,10 +139,25 @@ export default function ProfilesPage() {
                   <b>{p.name}</b>
                   <div className="small muted">{describeColumns(p)}</div>
                 </td>
-                <td>{accountName(p.account_id)}</td>
-                <td className="actions">
+                <td className="small">
+                  {p.columns.account && Object.values(p.options?.account_map ?? {}).some(Boolean) ? (
+                    <>
+                      {[...new Set(Object.values(p.options!.account_map!).filter(Boolean))].map((id) => (
+                        <div key={id}>{accountName(id)}</div>
+                      ))}
+                      {p.account_id && <div className="muted">altri: {accountName(p.account_id)}</div>}
+                    </>
+                  ) : p.account_id ? (
+                    accountName(p.account_id)
+                  ) : (
+                    <span className="muted">conto predefinito</span>
+                  )}
+                </td>
+                <td className="nowrap">
+                  <div className="actions">
                   <button className="ghost small" onClick={() => setEditing({ ...p })}>Modifica</button>
                   <button className="ghost small" onClick={() => remove(p)}>Elimina</button>
+                  </div>
                 </td>
               </tr>
             ),
