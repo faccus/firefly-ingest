@@ -22,8 +22,6 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -41,8 +39,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=sha
-      - id: build
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -50,39 +47,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # Deploy: scrive il nuovo digest in faccus/dymista-homelab; Portainer (GitOps polling)
-  # rideploya lo stack firefly-ingest quando vede il commit.
-  deploy:
-    needs: image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: homelab-deploy
-      cancel-in-progress: false
-    env:
-      HAS_KEY: ${{ secrets.HOMELAB_DEPLOY_KEY != '' }}
-      IMAGE: ghcr.io/${{ github.repository }}@${{ needs.image.outputs.digest }}
-    steps:
-      - name: Deploy key presente?
-        if: env.HAS_KEY != 'true'
-        run: echo "::notice::Secret HOMELAB_DEPLOY_KEY non configurato, deploy saltato"
-      - uses: actions/checkout@v4
-        if: env.HAS_KEY == 'true'
-        with:
-          repository: faccus/dymista-homelab
-          ssh-key: ${{ secrets.HOMELAB_DEPLOY_KEY }}
-          path: homelab
-      - name: Aggiorna il digest nello stack
-        if: env.HAS_KEY == 'true'
-        working-directory: homelab
-        run: |
-          f=stacks/firefly-ingest/compose.yml
-          sed -i -E "s#^([[:space:]]*image: )ghcr\.io/faccus/firefly-ingest@sha256:[0-9a-f]{64}\$#\1${IMAGE}#" "$f"
-          grep -qF "image: ${IMAGE}" "$f" || { echo "::error::riga image non trovata in $f"; exit 1; }
-          if git diff --quiet; then echo "Digest già aggiornato"; exit 0; fi
-          git config user.name "firefly-ingest CI"
-          git config user.email "firefly-ingest-ci@users.noreply.github.com"
-          git commit -qam "Deploy firefly-ingest ${GITHUB_SHA::7}" -m "Image ${IMAGE}" -m "From ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
-          for i in 1 2 3; do git push -q && exit 0; git pull -q --rebase; done
-          exit 1
