@@ -341,6 +341,19 @@ def reapply(bid: int) -> dict[str, int]:
         return {"changed": pipeline.reapply_rules(conn, bid)}
 
 
+class PreviewIn(BaseModel):
+    row_ids: list[int]
+
+
+@router.post("/batches/{bid}/preview")
+async def preview(bid: int, body: PreviewIn) -> dict[str, Any]:
+    meta = await _meta_or_none()
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM batches WHERE id = ?", (bid,)).fetchone():
+            raise HTTPException(404, "Lotto non trovato")
+        return await pipeline.preview_rows(conn, get_firefly(), bid, body.row_ids, meta)
+
+
 @router.post("/batches/{bid}/import")
 async def do_import(bid: int, body: ImportIn) -> dict[str, int]:
     with db.connect() as conn:

@@ -61,17 +61,29 @@ def _summary(batch_id: int, accounts: dict[str, str], max_rows: int = 15) -> tup
     ready = [r for r in rows if r["status"] == pipeline.READY]
     lines = []
     for r in rows[:max_rows]:
-        mark = {"new": "•", "duplicate": "⛔", "possible_duplicate": "⚠️"}.get(r["status"], "•")
+        mark = {"new": "•", "duplicate": "⛔", "possible_duplicate": "⚠️", "skipped": "⏭"}.get(r["status"], "•")
+        acc = accounts.get(str(r["account_id"]), str(r["account_id"] or "?"))
+        if not r["account_id"]:
+            route = "<i>conto mancante</i>"
+        else:
+            sp = pipeline.build_split(r)
+            if sp["type"] == "transfer":
+                src = accounts.get(sp["source_id"], sp["source_id"])
+                dst = accounts.get(sp["destination_id"], sp["destination_id"])
+            elif sp["type"] == "withdrawal":
+                src, dst = acc, sp.get("destination_name") or "?"
+            else:
+                src, dst = sp.get("source_name") or "?", acc
+            route = f"{html.escape(src)} → {html.escape(dst)}"
         if r["transfer_account_id"]:
-            what = "↔ " + html.escape(accounts.get(str(r["transfer_account_id"]), str(r["transfer_account_id"])))
+            what = "giroconto"
         elif r["category"]:
-            what = html.escape(r["category"])
+            what = html.escape(r["category"]) + ("?" if r.get("cat_source") in ("history", "bank") else "")
         else:
             what = "<i>senza categoria</i>"
-        acc = html.escape(accounts.get(str(r["account_id"]), str(r["account_id"] or "?")))
         lines.append(
             f"{mark} {r['date'][8:10]}/{r['date'][5:7]} <b>{_fmt_amount(r['amount'])}</b> "
-            f"{html.escape(r['description'][:40])} · {what} · {acc}"
+            f"{html.escape(r['description'][:40])}\n      {route} · {what}"
         )
     if len(rows) > max_rows:
         lines.append(f"… e altre {len(rows) - max_rows} righe")

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, Batch, fmtAmount, fmtDate, Row, RowStatus } from "../api";
 import { AccountSelect, useMeta } from "../meta";
 import RuleForm, { emptyRule } from "./RuleForm";
+import PreviewModal, { Preview } from "./PreviewModal";
 
 const STATUS_LABEL: Record<RowStatus, string> = {
   new: "pronta",
@@ -49,6 +50,7 @@ export default function BatchPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [bulkCat, setBulkCat] = useState("");
+  const [preview, setPreview] = useState<Preview | null>(null);
 
   const load = useCallback(
     async (resetSelection = false) => {
@@ -100,15 +102,26 @@ export default function BatchPage() {
     setBulkCat("");
   }
 
-  async function doImport() {
+  async function openPreview() {
     setBusy(true);
     setMsg(null);
     try {
-      // le righe duplicate selezionate a mano vengono forzate
-      for (const r of selectedRows.filter((r) => r.status === "duplicate")) await api.patch(`/rows/${r.id}`, { status: "new" });
+      setPreview(await api.post<Preview>(`/batches/${id}/preview`, { row_ids: selectedRows.map((r) => r.id) }));
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport(rowIds: number[]) {
+    setBusy(true);
+    setMsg(null);
+    try {
       const res = await api.post<{ imported: number; duplicate: number; error: number }>(`/batches/${id}/import`, {
-        row_ids: selectedRows.map((r) => r.id),
+        row_ids: rowIds,
       });
+      setPreview(null);
       setMsg({
         kind: res.error ? "err" : "ok",
         text: `Importate ${res.imported}` + (res.duplicate ? ` · rifiutate come duplicate ${res.duplicate}` : "") + (res.error ? ` · errori ${res.error}` : ""),
@@ -149,8 +162,8 @@ export default function BatchPage() {
           </div>
           <div className="actions">
             <button onClick={deleteBatch} className="ghost">Elimina lotto</button>
-            <button className="primary" disabled={busy || !selectedRows.length} onClick={doImport}>
-              {busy ? "Invio…" : `Importa ${selectedRows.length} in Firefly`}
+            <button className="primary" disabled={busy || !selectedRows.length} onClick={openPreview}>
+              {busy ? "Attendi…" : `Anteprima e importa ${selectedRows.length}`}
               {selectedRows.length > 0 && <small> ({fmtAmount(total)})</small>}
             </button>
           </div>
@@ -287,6 +300,8 @@ export default function BatchPage() {
           </tbody>
         </table>
       </section>
+
+      {preview && <PreviewModal preview={preview} busy={busy} onConfirm={doImport} onCancel={() => setPreview(null)} />}
 
       {ruleFor && (
         <div className="modal" onClick={() => setRuleFor(null)}>

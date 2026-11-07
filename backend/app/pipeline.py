@@ -381,13 +381,121 @@ async def find_existing_transfer(ff: FireflyClient, row: dict[str, Any]) -> str 
     return None
 
 
+FORCEABLE = (DUPLICATE, SKIPPED)
+IMPORTABLE = (READY, POSSIBLE_DUP, ERROR)
+
+TYPE_LABEL = {"withdrawal": "uscita", "deposit": "entrata", "transfer": "giroconto"}
+
+
+async def preview_rows(
+    conn: sqlite3.Connection, ff: FireflyClient, batch_id: int, row_ids: list[int], meta: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Cosa verrà creato in Firefly per le righe selezionate, costruito con build_split
+    (la stessa funzione usata dall'invio), più avvisi e totali."""
+    meta = meta or {}
+    names = {a["id"]: a["name"] for a in meta.get("accounts", [])}
+    known_cats = {c.casefold() for c in meta.get("categories", [])}
+    known_tags = {t.casefold() for t in meta.get("tags", [])}
+    known_budgets = {b.casefold() for b in meta.get("budgets", [])}
+    expense = {a.casefold() for a in meta.get("expense_accounts", [])}
+    revenue = {a.casefold() for a in meta.get("revenue_accounts", [])}
+    wanted = set(row_ids)
+    rows = [
+        r
+        for r in db.to_dicts(conn.execute("SELECT * FROM rows WHERE batch_id = ? ORDER BY idx", (batch_id,)).fetchall())
+        if r["id"] in wanted and r["status"] != IMPORTED
+    ]
+    items: list[dict[str, Any]] = []
+    new_categories: set[str] = set()
+    new_tags: set[str] = set()
+    new_parties: set[str] = set()
+    by_type: Counter[str] = Counter()
+    totals: dict[str, Decimal] = defaultdict(Decimal)
+    for r in rows:
+        warnings: list[str] = []
+        errors: list[str] = []
+        if not r["account_id"]:
+            errors.append("conto non impostato")
+            items.append({"row_id": r["id"], "errors": errors, "warnings": warnings, "date": r["date"],
+                          "amount": r["amount"], "description": r["description"]})
+            continue
+        split = build_split(r)
+        t = split["type"]
+        acc_name = names.get(str(r["account_id"]), f"#{r['account_id']}")
+        party = split.get("destination_name") or split.get("source_name")
+        if t == "transfer":
+            src, dst = names.get(split["source_id"], f"#{split['source_id']}"), names.get(split["destination_id"], f"#{split['destination_id']}")
+            existing = await find_existing_transfer(ff, r)
+            if existing:
+                warnings.append(f"{existing}: non verrà creato")
+        elif t == "withdrawal":
+            src, dst = acc_name, party or "(senza controparte)"
+            if party and party.casefold() not in expense:
+                new_parties.add(party)
+        else:
+            src, dst = party or "(senza controparte)", acc_name
+            if party and party.casefold() not in revenue:
+                new_parties.add(party)
+        if r["status"] == DUPLICATE:
+            warnings.append(f"duplicato incluso a mano ({r['dup_reason']})")
+        elif r["status"] == POSSIBLE_DUP:
+            warnings.append(f"possibile duplicato ({r['dup_reason']})")
+        elif r["status"] == SKIPPED:
+            warnings.append("riga esclusa, inclusa a mano")
+        elif r["status"] == ERROR and r["error"]:
+            warnings.append(f"errore precedente: {r['error']}")
+        cat = split.get("category_name")
+        if t != "transfer" and not cat:
+            warnings.append("senza categoria")
+        if cat and cat.casefold() not in known_cats:
+            new_categories.add(cat)
+        if split.get("budget_name") and split["budget_name"].casefold() not in known_budgets:
+            warnings.append(f"budget inesistente: {split['budget_name']}")
+        for tag in split.get("tags") or []:
+            if tag.casefold() not in known_tags:
+                new_tags.add(tag)
+        by_type[t] += 1
+        totals[t] += Decimal(split["amount"])
+        items.append(
+            {
+                "row_id": r["id"],
+                "type": t,
+                "type_label": TYPE_LABEL[t],
+                "date": split["date"],
+                "amount": split["amount"],
+                "source": src,
+                "destination": dst,
+                "description": split["description"],
+                "category": cat,
+                "budget": split.get("budget_name"),
+                "tags": split.get("tags") or [],
+                "notes": split.get("notes"),
+                "forced": r["status"] in FORCEABLE,
+                "warnings": warnings,
+                "errors": errors,
+            }
+        )
+    return {
+        "items": items,
+        "summary": {
+            "count": sum(by_type.values()),
+            "by_type": {TYPE_LABEL[k]: {"count": v, "total": str(totals[k])} for k, v in by_type.items()},
+            "errors": sum(1 for i in items if i["errors"]),
+            "warnings": sum(1 for i in items if i["warnings"]),
+        },
+        "new_categories": sorted(new_categories),
+        "new_tags": sorted(new_tags),
+        "new_counterparties": sorted(new_parties),
+        "firefly_ok": bool(meta),
+    }
+
+
 async def import_rows(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int, row_ids: list[int] | None = None) -> dict[str, int]:
-    q = "SELECT * FROM rows WHERE batch_id = ? AND status IN (?, ?, ?)"
-    params: list[Any] = [batch_id, READY, POSSIBLE_DUP, ERROR]
-    rows = db.to_dicts(conn.execute(q, params).fetchall())
+    rows = db.to_dicts(conn.execute("SELECT * FROM rows WHERE batch_id = ? ORDER BY idx", (batch_id,)).fetchall())
     if row_ids is not None:
+        # selezione esplicita (dopo l'anteprima): include anche duplicati ed escluse scelti a mano
         wanted = set(row_ids)
-        rows = [r for r in rows if r["id"] in wanted]
+        rows = [r for r in rows if r["id"] in wanted and r["status"] in (*IMPORTABLE, *FORCEABLE)]
     else:
         # Senza selezione esplicita si importano solo le righe pronte (o in errore da riprovare)
         rows = [r for r in rows if r["status"] in (READY, ERROR)]

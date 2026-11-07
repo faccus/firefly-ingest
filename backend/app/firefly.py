@@ -77,6 +77,8 @@ class FireflyClient:
             return self._meta_cache[1]
         async with self._client() as c:
             accounts = await self._get_all(c, "/accounts", {"type": "asset"})
+            expense = await self._get_all(c, "/accounts", {"type": "expense"})
+            revenue = await self._get_all(c, "/accounts", {"type": "revenue"})
             categories = await self._get_all(c, "/categories")
             budgets = await self._get_all(c, "/budgets")
             tags = await self._get_all(c, "/tags")
@@ -94,6 +96,8 @@ class FireflyClient:
             "categories": sorted(c["attributes"]["name"] for c in categories),
             "budgets": sorted(b["attributes"]["name"] for b in budgets if b["attributes"].get("active", True)),
             "tags": sorted(t["attributes"]["tag"] for t in tags),
+            "expense_accounts": sorted(a["attributes"]["name"] for a in expense),
+            "revenue_accounts": sorted(a["attributes"]["name"] for a in revenue),
         }
         self._meta_cache = (time.monotonic(), meta)
         return meta

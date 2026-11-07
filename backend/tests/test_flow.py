@@ -23,6 +23,8 @@ def page(data):
 def ff_mock():
     firefly.set_firefly(None)
     with respx.mock(assert_all_called=False) as m:
+        m.get(f"{FF}/accounts", params={"type": "expense"}).respond(json=page([{"id": "70", "attributes": {"name": "Pizzeria"}}]))
+        m.get(f"{FF}/accounts", params={"type": "revenue"}).respond(json=page([]))
         m.get(f"{FF}/accounts").respond(
             json=page([{"id": "1", "attributes": {"name": "Conto Corrente", "iban": None, "currency_code": "EUR"}},
                        {"id": "2", "attributes": {"name": "Carta", "iban": None, "currency_code": "EUR"}}])
@@ -119,3 +121,24 @@ def test_transfer_dedupe_and_skip_rule(ff_mock):
         assert ff_mock.created == []
         rows = c.get(f"/api/batches/{bid}").json()["rows"]
         assert "Giroconto già presente" in rows[0]["dup_reason"]
+
+
+def test_preview_matches_import(ff_mock):
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"default_account_id": "1"})
+        c.post("/api/rules", json={"pattern": "pizza", "set_counterparty": "Pizzeria"})
+        c.post("/api/rules", json={"pattern": "autorizzazione", "set_skip": True})
+        bid = c.post("/api/text", json={"text": "12.50 pizza ieri #Cene\n+40 rimborso #Rimborsi !amici\n10 autorizzazione"}).json()["batch_id"]
+        rows = c.get(f"/api/batches/{bid}").json()["rows"]
+        ids = [r["id"] for r in rows]
+        p = c.post(f"/api/batches/{bid}/preview", json={"row_ids": ids}).json()
+        a, b, s = p["items"]
+        assert (a["type"], a["source"], a["destination"], a["amount"], a["category"]) == ("withdrawal", "Conto Corrente", "Pizzeria", "12.50", "Cene")
+        assert (b["type"], b["destination"], b["tags"]) == ("deposit", "Conto Corrente", ["amici"])
+        assert s["forced"] and "riga esclusa, inclusa a mano" in s["warnings"] and "senza categoria" in s["warnings"]
+        assert p["new_categories"] == ["Rimborsi"] and p["new_tags"] == ["amici"] and p["new_counterparties"] == []
+        assert p["summary"]["by_type"] == {"uscita": {"count": 2, "total": "22.50"}, "entrata": {"count": 1, "total": "40.00"}}
+        # l'invio usa gli stessi dati: anche la riga esclusa, perché scelta esplicitamente
+        assert c.post(f"/api/batches/{bid}/import", json={"row_ids": ids}).json()["imported"] == 3
+        sent = [t["transactions"][0] for t in ff_mock.created]
+        assert [(x["type"], x["amount"]) for x in sent] == [("withdrawal", "12.50"), ("deposit", "40.00"), ("withdrawal", "10.00")]

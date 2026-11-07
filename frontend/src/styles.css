@@ -163,3 +163,7 @@ details.mini { margin: 0; font-size: 11px; }
   .fgrid .wide { grid-column: auto; }
   .topbar { padding: 8px 12px; gap: 8px; }
 }
+.alert.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.modal > .card.wide-modal { width: min(1200px, 100%); }
+.preview-table { max-height: 60vh; overflow: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.grid tr.st-error td { background: color-mix(in srgb, var(--err-bg) 50%, transparent); }
