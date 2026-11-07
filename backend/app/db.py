@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS rows (
     dup_reason TEXT,
     rule_id INTEGER,
     cat_source TEXT,
+    orig_description TEXT,
+    orig_counterparty TEXT,
+    bank_category TEXT,
+    manual TEXT,
     firefly_id TEXT,
     error TEXT,
     raw TEXT
@@ -104,9 +108,13 @@ MIGRATIONS = [
     ("profiles", "options", "TEXT"),
     ("rows", "cat_source", "TEXT"),
     ("rules", "set_skip", "INTEGER NOT NULL DEFAULT 0"),
+    ("rows", "orig_description", "TEXT"),
+    ("rows", "orig_counterparty", "TEXT"),
+    ("rows", "bank_category", "TEXT"),
+    ("rows", "manual", "TEXT"),
 ]
 
-JSON_FIELDS = {"columns", "options", "tags", "set_tags", "raw"}
+JSON_FIELDS = {"columns", "options", "tags", "set_tags", "raw", "manual"}
 
 
 def now_iso() -> str:

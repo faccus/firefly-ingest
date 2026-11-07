@@ -142,3 +142,30 @@ def test_preview_matches_import(ff_mock):
         assert c.post(f"/api/batches/{bid}/import", json={"row_ids": ids}).json()["imported"] == 3
         sent = [t["transactions"][0] for t in ff_mock.created]
         assert [(x["type"], x["amount"]) for x in sent] == [("withdrawal", "12.50"), ("deposit", "40.00"), ("withdrawal", "10.00")]
+
+
+def test_reapply_recomputes_but_keeps_manual_edits(ff_mock):
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"default_account_id": "1"})
+        bid = c.post("/api/text", json={"text": "8.66 Verso FABIO GALLOTTI Data 31.10\n5 autorizzazione\n3 caffè bar"}).json()["batch_id"]
+        rows = c.get(f"/api/batches/{bid}").json()["rows"]
+        assert rows[0]["counterparty"] is None and rows[0]["category"] is None
+        # una categoria scelta a mano non va persa
+        c.patch(f"/api/rows/{rows[2]['id']}", json={"category": "Bar"})
+        # regole create dopo il caricamento
+        c.post("/api/rules", json={"match_type": "regex", "pattern": r"Verso (?P<nome>.+?) Data", "set_counterparty": "{nome}", "set_category": "Amici"})
+        skip = c.post("/api/rules", json={"pattern": "autorizzazione", "set_skip": True}).json()
+        c.post("/api/rules", json={"pattern": "caffè", "set_category": "Colazione"})
+        assert c.post(f"/api/batches/{bid}/reapply-rules").json()["changed"] == 2
+        rows = c.get(f"/api/batches/{bid}").json()["rows"]
+        assert (rows[0]["counterparty"], rows[0]["category"], rows[0]["cat_source"]) == ("Fabio Gallotti", "Amici", "rule")
+        assert rows[1]["status"] == "skipped"
+        assert (rows[2]["category"], rows[2]["cat_source"]) == ("Bar", "manual")
+        # disattivando la regola "ignora" la riga torna pronta
+        c.put(f"/api/rules/{skip['id']}", json={"pattern": "autorizzazione", "set_skip": True, "active": False})
+        c.post(f"/api/batches/{bid}/reapply-rules")
+        assert c.get(f"/api/batches/{bid}").json()["rows"][1]["status"] == "new"
+        # svuotando il campo, la categoria torna alle regole
+        c.patch(f"/api/rows/{rows[2]['id']}", json={"category": ""})
+        c.post(f"/api/batches/{bid}/reapply-rules")
+        assert c.get(f"/api/batches/{bid}").json()["rows"][2]["category"] == "Colazione"

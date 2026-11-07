@@ -336,9 +336,11 @@ def delete_batch(bid: int) -> dict[str, bool]:
 
 
 @router.post("/batches/{bid}/reapply-rules")
-def reapply(bid: int) -> dict[str, int]:
+async def reapply(bid: int) -> dict[str, int]:
     with db.connect() as conn:
-        return {"changed": pipeline.reapply_rules(conn, bid)}
+        changed = pipeline.reapply_rules(conn, bid)
+        suggested = await pipeline.suggest_from_history(conn, get_firefly(), bid)
+    return {"changed": changed, "suggested": suggested}
 
 
 class PreviewIn(BaseModel):
@@ -378,6 +380,15 @@ def patch_row(row_id: int, body: RowPatch) -> dict[str, Any]:
             raise HTTPException(409, "Riga già importata")
         if values.get("status") == "new" and r["status"] in (pipeline.DUPLICATE, pipeline.POSSIBLE_DUP):
             values["status"] = pipeline.POSSIBLE_DUP if r["status"] == pipeline.POSSIBLE_DUP else pipeline.READY
+        # i campi toccati a mano non vengono più cambiati dalle regole; svuotarli li restituisce alle regole
+        manual = set(r.get("manual") or [])
+        for k in pipeline.RULE_FIELDS:
+            if k in values:
+                if values[k] in (None, "", []):
+                    manual.discard(k)
+                else:
+                    manual.add(k)
+        values["manual"] = sorted(manual)
         if "category" in values:
             values["cat_source"] = "manual" if values["category"] else None
         db.update(conn, "rows", row_id, values)

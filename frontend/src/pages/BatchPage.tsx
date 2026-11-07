@@ -142,11 +142,24 @@ export default function BatchPage() {
     nav("/batches");
   }
 
+  async function reapplyRules(prefix = "") {
+    setBusy(true);
+    try {
+      const res = await api.post<{ changed: number; suggested: number }>(`/batches/${id}/reapply-rules`);
+      const parts = [`${res.changed} righe aggiornate dalle regole`];
+      if (res.suggested) parts.push(`${res.suggested} categorie suggerite dallo storico`);
+      setMsg({ kind: "ok", text: prefix + parts.join(" · ") });
+      await load();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function afterRuleSaved() {
     setRuleFor(null);
-    const res = await api.post<{ changed: number }>(`/batches/${id}/reapply-rules`);
-    setMsg({ kind: "ok", text: `Regola salvata · ${res.changed} righe aggiornate` });
-    await load();
+    await reapplyRules("Regola salvata · ");
   }
 
   if (!batch) return msg ? <div className="alert err">{msg.text}</div> : <p className="muted">Caricamento…</p>;
@@ -163,6 +176,13 @@ export default function BatchPage() {
           </div>
           <div className="actions">
             <button onClick={deleteBatch} className="ghost">Elimina lotto</button>
+            <button
+              onClick={() => reapplyRules()}
+              disabled={busy}
+              title="Ricalcola le righe con le regole attuali. Le modifiche fatte a mano restano; svuota un campo per restituirlo alle regole."
+            >
+              ↻ Riapplica regole
+            </button>
             <button className="primary" disabled={busy || !selectedRows.length} onClick={openPreview}>
               {busy ? "Attendi…" : `Anteprima e importa ${selectedRows.length}`}
               {selectedRows.length > 0 && <small> ({fmtAmount(total)})</small>}

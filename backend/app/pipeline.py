@@ -101,24 +101,21 @@ def create_batch(
             "hash": h,
             "status": READY,
             "raw": rec.raw or None,
+            "orig_description": rec.description,
+            "orig_counterparty": rec.counterparty,
+            "bank_category": rec.bank_category,
         }
-        changes, rule_id = apply_rules(rules, row)
-        skip = changes.pop("skip", False)
-        row.update(changes)
-        row["rule_id"] = rule_id
-        if skip:
-            row["status"], row["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{rule_id}"
-        if rule_id:
-            hit_counts[rule_id] += 1
-        if changes.get("category"):
-            row["cat_source"] = "rule"
+        # campi imposti dall'utente (es. #categoria/@conto/!tag nel testo rapido): le regole non li toccano
         for k, v in ov.items():
             if v not in (None, "", []):
                 row[k] = v
-                if k == "category":
-                    row["cat_source"] = "manual"
-        if use_bank_category and rec.bank_category and not row["category"] and not row["transfer_account_id"]:
-            row["category"], row["cat_source"] = rec.bank_category, "bank"
+        row["manual"] = [k for k in RULE_FIELDS if k in ov and ov[k] not in (None, "", [])]
+        derived, skip = derive_row(rules, row, use_bank_category)
+        row.update(derived)
+        if skip:
+            row["status"], row["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{row['rule_id']}"
+        if row["rule_id"]:
+            hit_counts[row["rule_id"]] += 1
         if conn.execute("SELECT 1 FROM imported_hashes WHERE hash = ?", (h,)).fetchone():
             row["status"] = DUPLICATE
             row["dup_reason"] = "Già importata da questa app"
@@ -553,30 +550,66 @@ def batch_counts(conn: sqlite3.Connection, batch_id: int) -> dict[str, int]:
     }
 
 
+RULE_FIELDS = ("category", "budget", "tags", "transfer_account_id", "description", "counterparty")
+
+
+def derive_row(rules: list[dict[str, Any]], row: dict[str, Any], use_bank_category: bool = False) -> tuple[dict[str, Any], bool]:
+    """Ricalcola da zero i campi che dipendono dalle regole, partendo dai valori
+    originali del file e conservando quelli modificati a mano (row["manual"]).
+    Ritorna (campi, ignora)."""
+    manual = set(row.get("manual") or [])
+    base = {**row}
+    has_orig = row.get("orig_description") is not None
+    if "description" not in manual and has_orig:
+        base["description"] = row["orig_description"]
+    if "counterparty" not in manual and has_orig:
+        base["counterparty"] = row.get("orig_counterparty")
+    for k in ("category", "budget", "transfer_account_id"):
+        if k not in manual:
+            base[k] = None
+    if "tags" not in manual:
+        base["tags"] = []
+    changes, rule_id = apply_rules(rules, base)
+    skip = bool(changes.pop("skip", False))
+    out = {k: base.get(k) for k in RULE_FIELDS}
+    out.update(changes)
+    for k in manual & set(RULE_FIELDS):
+        out[k] = row.get(k)  # le modifiche manuali vincono sempre
+    if "category" in manual:
+        out["cat_source"] = "manual"
+    elif changes.get("category"):
+        out["cat_source"] = "rule"
+    elif use_bank_category and row.get("bank_category") and not out["transfer_account_id"]:
+        out["category"], out["cat_source"] = row["bank_category"], "bank"
+    else:
+        out["cat_source"] = None
+    out["rule_id"] = rule_id
+    return out, skip
+
+
 def reapply_rules(conn: sqlite3.Connection, batch_id: int) -> int:
-    """Riapplica le regole alle righe non ancora importate.
-    Sovrascrive solo i campi ancora vuoti, per non perdere le correzioni manuali."""
+    """Riapplica tutte le regole attive alle righe non ancora importate: i campi
+    derivati dalle regole vengono ricalcolati, le modifiche manuali restano.
+    Ritorna il numero di righe cambiate."""
     rules = active_rules(conn)
+    b = conn.execute("SELECT profile_id FROM batches WHERE id = ?", (batch_id,)).fetchone()
+    use_bank = False
+    if b and b["profile_id"]:
+        p = db.to_dict(conn.execute("SELECT options FROM profiles WHERE id = ?", (b["profile_id"],)).fetchone())
+        use_bank = bool(((p or {}).get("options") or {}).get("use_bank_category"))
     rows = db.to_dicts(
         conn.execute("SELECT * FROM rows WHERE batch_id = ? AND status NOT IN (?, ?)", (batch_id, IMPORTED, DUPLICATE)).fetchall()
     )
     changed = 0
     for r in rows:
-        # i suggerimenti (storico/banca) non sono scelte dell'utente: una regola li sostituisce
-        base = {**r}
-        if r.get("cat_source") in ("history", "bank"):
-            base["category"] = None
-        changes, rule_id = apply_rules(rules, base)
-        if changes.pop("skip", False) and r["status"] == READY:
-            changes["status"], changes["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{rule_id}"
-        # descrizione/controparte non vengono riscritte in un riapplica
-        changes = {k: v for k, v in changes.items() if k not in ("description", "counterparty") and not base.get(k)}
-        if changes.get("category") == r.get("category"):
-            changes.pop("category")
-        if changes:
-            if "category" in changes:
-                changes["cat_source"] = "rule"
-            changes["rule_id"] = r["rule_id"] or rule_id
-            db.update(conn, "rows", r["id"], changes)
-            changed += 1
+        derived, skip = derive_row(rules, r, use_bank)
+        if skip and r["status"] in (READY, POSSIBLE_DUP, ERROR, SKIPPED):
+            derived["status"], derived["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{derived['rule_id']}"
+        elif not skip and r["status"] == SKIPPED and (r["dup_reason"] or "").startswith("Ignorata dalla regola"):
+            derived["status"], derived["dup_reason"] = READY, None
+        diff = {k: v for k, v in derived.items() if r.get(k) != v}
+        if diff:
+            db.update(conn, "rows", r["id"], diff)
+            if set(diff) - {"rule_id", "cat_source"}:
+                changed += 1
     return changed
