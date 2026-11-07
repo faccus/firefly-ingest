@@ -4,6 +4,7 @@ import { api, Batch, fmtAmount, fmtDate, Row, RowStatus } from "../api";
 import { AccountSelect, useMeta } from "../meta";
 import RuleForm, { emptyRule } from "./RuleForm";
 import PreviewModal, { Preview } from "./PreviewModal";
+import Modal from "../Modal";
 
 const STATUS_LABEL: Record<RowStatus, string> = {
   new: "pronta",
@@ -304,8 +305,7 @@ export default function BatchPage() {
       {preview && <PreviewModal preview={preview} busy={busy} onConfirm={doImport} onCancel={() => setPreview(null)} />}
 
       {ruleFor && (
-        <div className="modal" onClick={() => setRuleFor(null)}>
-          <div className="card" onClick={(e) => e.stopPropagation()}>
+        <Modal onClose={() => setRuleFor(null)}>
             <h3>Nuova regola</h3>
             <p className="muted small">
               Da: <b>{ruleFor.description}</b> {ruleFor.counterparty && <>· {ruleFor.counterparty}</>} · {fmtAmount(ruleFor.amount)}
@@ -325,8 +325,7 @@ export default function BatchPage() {
               onSaved={afterRuleSaved}
               onCancel={() => setRuleFor(null)}
             />
-          </div>
-        </div>
+        </Modal>
       )}
       {meta && !meta.firefly_ok && <div className="alert err">Firefly non raggiungibile: {meta.error}</div>}
     </div>

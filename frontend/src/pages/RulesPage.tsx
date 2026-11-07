@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, Rule } from "../api";
 import { useMeta } from "../meta";
 import RuleForm, { emptyRule, RuleDraft } from "./RuleForm";
+import Modal from "../Modal";
 
 const MATCH: Record<Rule["match_type"], string> = { contains: "contiene", equals: "=", starts: "inizia con", regex: "regex" };
 const FIELD: Record<Rule["field"], string> = { any: "testo", description: "descrizione", counterparty: "controparte", notes: "note" };
@@ -84,8 +85,7 @@ export default function RulesPage() {
         </table>
       </section>
       {editing && (
-        <div className="modal" onClick={() => setEditing(null)}>
-          <div className="card" onClick={(e) => e.stopPropagation()}>
+        <Modal onClose={() => setEditing(null)}>
             <h3>{editing.id ? "Modifica regola" : "Nuova regola"}</h3>
             <RuleForm
               initial={editing}
@@ -95,8 +95,7 @@ export default function RulesPage() {
               }}
               onCancel={() => setEditing(null)}
             />
-          </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

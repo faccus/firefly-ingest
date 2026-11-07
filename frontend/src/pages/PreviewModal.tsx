@@ -1,4 +1,5 @@
 import { fmtAmount, fmtDate } from "../api";
+import Modal from "../Modal";
 
 export type PreviewItem = {
   row_id: number;
@@ -44,8 +45,7 @@ export default function PreviewModal({
   const sendable = preview.items.filter((i) => !i.errors.length);
   const { by_type } = preview.summary;
   return (
-    <div className="modal" onClick={onCancel}>
-      <div className="card wide-modal" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onCancel} wide>
         <h3>Verranno create {sendable.length} transazioni in Firefly</h3>
         <div className="counts">
           {Object.entries(by_type).map(([label, v]) => (
@@ -126,7 +126,6 @@ export default function PreviewModal({
             {busy ? "Invio…" : `Conferma e invia ${sendable.length}`}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
