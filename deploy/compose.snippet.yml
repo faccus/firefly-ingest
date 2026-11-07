@@ -1,0 +1,28 @@
+# Da aggiungere sotto `services:` in stacks/firefly/docker-compose.yml
+# (stessa rete firefly_iii degli altri servizi; porta host 42172 come Firefly/importer
+#  42170/42171, così Nginx Proxy Manager la raggiunge come fa già per Firefly)
+  ingest:
+    image: ghcr.io/faccus/firefly-ingest:latest
+    container_name: firefly_iii_ingest
+    hostname: ingest
+    restart: always
+    networks:
+      - firefly_iii
+    ports:
+      - "42172:8080"
+    depends_on:
+      - app
+    environment:
+      FIREFLY_URL: http://app:8080
+      FIREFLY_TOKEN: ${FIREFLY_INGEST_TOKEN:?Personal Access Token Firefly per firefly-ingest}
+      FIREFLY_APPLY_RULES: "true"
+      TELEGRAM_BOT_TOKEN: ${FIREFLY_INGEST_TELEGRAM_TOKEN:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${FIREFLY_INGEST_TELEGRAM_CHATS:-}
+      PUBLIC_URL: ${FIREFLY_INGEST_PUBLIC_URL:-}
+      TZ: Europe/Rome
+    volumes:
+      - firefly_iii_ingest:/data
+
+# e sotto `volumes:`
+  firefly_iii_ingest:
+    name: firefly_iii_ingest

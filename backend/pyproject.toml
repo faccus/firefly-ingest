@@ -1,0 +1,23 @@
+[project]
+name = "firefly-ingest"
+version = "0.1.0"
+description = "Ingestione rapida di estratti conto e spese in Firefly III"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic-settings>=2.4",
+    "python-multipart>=0.0.9",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "python-telegram-bot>=21.6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "respx>=0.21"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
