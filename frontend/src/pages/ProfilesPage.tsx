@@ -75,6 +75,48 @@ export default function ProfilesPage() {
                       segno
                     </label>
                   </div>
+                  {editing.columns.account && (
+                    <div className="subsection">
+                      <b>Conto Firefly per "{editing.columns.account}"</b>
+                      <table className="map-table">
+                        <tbody>
+                          {Object.keys(editing.options?.account_map ?? {}).map((v) => (
+                            <tr key={v}>
+                              <td>
+                                <code>{v}</code>
+                              </td>
+                              <td>
+                                <AccountSelect
+                                  value={editing.options?.account_map?.[v]}
+                                  placeholder="conto del profilo"
+                                  onChange={(id) =>
+                                    setEditing({
+                                      ...editing,
+                                      options: { ...editing.options, account_map: { ...editing.options?.account_map, [v]: id } },
+                                    })
+                                  }
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <p className="muted small">
+                        Valori non mappati (es. una carta nuova) finiscono sul conto del profilo. Per aggiungerne uno usa <code>*</code> come
+                        ripiego, oppure ricrea il profilo.
+                      </p>
+                    </div>
+                  )}
+                  {editing.columns.category && (
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={!!editing.options?.use_bank_category}
+                        onChange={(e) => setEditing({ ...editing, options: { ...editing.options, use_bank_category: e.target.checked } })}
+                      />{" "}
+                      usa la categoria della banca come ripiego
+                    </label>
+                  )}
                   <div className="actions end">
                     <button className="ghost" onClick={() => setEditing(null)}>Annulla</button>
                     <button className="primary" onClick={save}>Salva</button>

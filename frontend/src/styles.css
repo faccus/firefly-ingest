@@ -134,6 +134,13 @@ input.cell { border-color: transparent; background: transparent; width: 100%; pa
 input.cell:hover:not(:disabled), input.cell:focus { border-color: var(--border); background: var(--bg); }
 input.cell.small { font-size: 12px; color: var(--muted); }
 input.cell:disabled { color: inherit; }
+.notes { font-size: 11px; color: var(--muted); padding: 0 6px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catcell { display: flex; align-items: center; gap: 4px; }
+input.cell.suggested { font-style: italic; color: var(--warn-fg); }
+.pill.src { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 0 5px; }
+.pill.src-history, .pill.src-bank { border-color: var(--warn-fg); color: var(--warn-fg); }
+.map-table td { padding: 4px 8px; }
+.subsection { margin-top: 14px; }
 .reason { font-size: 11px; color: var(--muted); max-width: 220px; }
 .transfer { display: flex; align-items: center; gap: 4px; }
 details.mini { margin: 0; font-size: 11px; }

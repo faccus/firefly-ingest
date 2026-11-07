@@ -114,6 +114,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except (QuickTextError, ValueError) as e:
         await update.message.reply_text(f"❌ {e}\n\nScrivi /aiuto per la sintassi.")
         return
+    with db.connect() as conn:
+        await pipeline.suggest_from_history(conn, get_firefly(), bid)
     text, n_ready = _summary(bid, accounts)
     await update.message.reply_html(text, reply_markup=_keyboard(bid, n_ready))
 
@@ -132,7 +134,7 @@ async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         with db.connect() as conn:
             result = pipeline.process_upload(conn, upload_id, source="telegram", chat_id=update.effective_chat.id)  # type: ignore[union-attr]
             if "batch_id" in result:
-                await pipeline.check_firefly_duplicates(conn, get_firefly(), result["batch_id"])
+                await pipeline.enrich_batch(conn, get_firefly(), result["batch_id"])
     except TableError as e:
         await update.message.reply_text(f"❌ {e}")
         return

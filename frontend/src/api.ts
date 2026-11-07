@@ -28,6 +28,7 @@ export type Row = {
   status: RowStatus;
   dup_reason: string | null;
   rule_id: number | null;
+  cat_source: "rule" | "history" | "bank" | "manual" | null;
   firefly_id: string | null;
   error: string | null;
   raw: Record<string, string | null> | null;
@@ -53,6 +54,15 @@ export type Columns = {
   description: string[];
   counterparty: string | null;
   notes: string | null;
+  account?: string | null;
+  category?: string | null;
+  status?: string | null;
+};
+
+export type ProfileOptions = {
+  account_map?: Record<string, string | null>;
+  status_skip?: string[];
+  use_bank_category?: boolean;
 };
 
 export type Profile = {
@@ -65,6 +75,7 @@ export type Profile = {
   decimal_sep: "," | "." | null;
   invert_sign: number | boolean;
   columns: Columns;
+  options: ProfileOptions | null;
 };
 
 export type Rule = {
@@ -84,6 +95,7 @@ export type Rule = {
   set_counterparty: string | null;
   set_description: string | null;
   set_transfer_account_id: string | null;
+  set_skip: number | boolean;
   active: number | boolean;
   hits: number;
 };
@@ -97,6 +109,7 @@ export type Inspect = {
   headers: string[];
   sample: string[][];
   guess: Columns;
+  distinct: Record<string, string[]>;
   encoding: string | null;
   delimiter: string | null;
 };

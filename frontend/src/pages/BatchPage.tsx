@@ -219,6 +219,7 @@ export default function BatchPage() {
                   <td className="desc">
                     <EditText value={r.description} disabled={locked} onSave={(v) => patch(r, { description: v })} />
                     <EditText value={r.counterparty ?? ""} placeholder="controparte" disabled={locked} small onSave={(v) => patch(r, { counterparty: v || null })} />
+                    {r.notes && r.notes !== r.description && <div className="notes" title={r.notes}>{r.notes}</div>}
                   </td>
                   <td className={`num nowrap ${out ? "neg" : "pos"}`}>{fmtAmount(r.amount)}</td>
                   <td>
@@ -234,7 +235,17 @@ export default function BatchPage() {
                         ↔ <AccountSelect value={r.transfer_account_id} onChange={(v) => patch(r, { transfer_account_id: v })} />
                       </div>
                     ) : (
-                      <EditText value={r.category ?? ""} list="dl-categories" placeholder="categoria" disabled={locked} onSave={(v) => patch(r, { category: v || null })} />
+                      <div className="catcell">
+                        <EditText
+                          value={r.category ?? ""}
+                          list="dl-categories"
+                          placeholder="categoria"
+                          disabled={locked}
+                          suggested={r.cat_source === "history" || r.cat_source === "bank"}
+                          onSave={(v) => patch(r, { category: v || null })}
+                        />
+                        <CatSource row={r} />
+                      </div>
                     )}
                     {!locked && !r.transfer_account_id && (
                       <details className="mini">
@@ -261,7 +272,6 @@ export default function BatchPage() {
                     <span className={`pill st-${r.status}`} title={r.dup_reason ?? r.error ?? ""}>
                       {STATUS_LABEL[r.status]}
                     </span>
-                    {r.rule_id && <span className="pill rule" title={`Regola #${r.rule_id}`}>R</span>}
                     {(r.dup_reason || r.error) && <div className="reason">{r.error ?? r.dup_reason}</div>}
                   </td>
                   <td>
@@ -308,6 +318,24 @@ export default function BatchPage() {
   );
 }
 
+const SOURCE: Record<string, [string, string]> = {
+  rule: ["R", "Da una regola"],
+  history: ["S", "Suggerita dallo storico Firefly"],
+  bank: ["B", "Categoria proposta dalla banca"],
+  manual: ["M", "Impostata a mano"],
+};
+
+function CatSource({ row }: { row: Row }) {
+  if (!row.category || !row.cat_source) return null;
+  const [label, title] = SOURCE[row.cat_source];
+  const why = row.cat_source === "history" ? row.raw?._suggerimento : row.cat_source === "rule" ? `regola #${row.rule_id}` : null;
+  return (
+    <span className={`pill src src-${row.cat_source}`} title={why ? `${title}: ${why}` : title}>
+      {label}
+    </span>
+  );
+}
+
 function AccountName({ id }: { id: string | null }) {
   const { accountName } = useMeta();
   return <>{accountName(id)}</>;
@@ -320,6 +348,7 @@ function EditText({
   list,
   disabled,
   small,
+  suggested,
 }: {
   value: string;
   onSave: (v: string) => void;
@@ -327,12 +356,13 @@ function EditText({
   list?: string;
   disabled?: boolean;
   small?: boolean;
+  suggested?: boolean;
 }) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   return (
     <input
-      className={`cell ${small ? "small" : ""}`}
+      className={`cell ${small ? "small" : ""} ${suggested ? "suggested" : ""}`}
       value={v}
       list={list}
       placeholder={placeholder}

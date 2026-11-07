@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     decimal_sep TEXT,
     invert_sign INTEGER NOT NULL DEFAULT 0,
     columns TEXT NOT NULL,
+    options TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS rules (
     set_counterparty TEXT,
     set_description TEXT,
     set_transfer_account_id TEXT,
+    set_skip INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     hits INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
@@ -71,6 +73,7 @@ CREATE TABLE IF NOT EXISTS rows (
     status TEXT NOT NULL,
     dup_reason TEXT,
     rule_id INTEGER,
+    cat_source TEXT,
     firefly_id TEXT,
     error TEXT,
     raw TEXT
@@ -97,7 +100,13 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-JSON_FIELDS = {"columns", "tags", "set_tags", "raw"}
+MIGRATIONS = [
+    ("profiles", "options", "TEXT"),
+    ("rows", "cat_source", "TEXT"),
+    ("rules", "set_skip", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+JSON_FIELDS = {"columns", "options", "tags", "set_tags", "raw"}
 
 
 def now_iso() -> str:
@@ -110,6 +119,11 @@ def init_db() -> None:
     s.uploads_dir.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        # Migrazioni additive per database creati da versioni precedenti
+        for table, column, decl in MIGRATIONS:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 @contextmanager

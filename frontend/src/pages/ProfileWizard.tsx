@@ -16,6 +16,9 @@ export default function ProfileWizard() {
   const [decimal, setDecimal] = useState<"" | "," | ".">("");
   const [dateFormat, setDateFormat] = useState("");
   const [invert, setInvert] = useState(false);
+  const [accountMap, setAccountMap] = useState<Record<string, string | null>>({});
+  const [statusSkip, setStatusSkip] = useState<string[]>([]);
+  const [useBankCat, setUseBankCat] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -25,6 +28,7 @@ export default function ProfileWizard() {
       .then((i) => {
         setInsp(i);
         setCols(i.guess);
+        if (i.guess.status) setStatusSkip((i.distinct[i.guess.status] ?? []).filter((v) => /^non\b|^in attesa|^pending/i.test(v)));
         setMode(i.guess.amount || !(i.guess.debit || i.guess.credit) ? "single" : "split");
         setName(i.filename.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
       })
@@ -54,7 +58,13 @@ export default function ProfileWizard() {
     </label>
   );
 
-  const valid = !!name.trim() && !!cols.date && (mode === "single" ? !!cols.amount : !!(cols.debit || cols.credit));
+  const accountValues = cols.account ? insp.distinct[cols.account] ?? [] : [];
+  const statusValues = cols.status ? insp.distinct[cols.status] ?? [] : [];
+  const valid =
+    !!name.trim() &&
+    !!cols.date &&
+    (mode === "single" ? !!cols.amount : !!(cols.debit || cols.credit)) &&
+    (!cols.account || accountValues.every((v) => accountMap[v]) || !!account);
 
   async function save() {
     setBusy(true);
@@ -70,6 +80,11 @@ export default function ProfileWizard() {
         encoding: insp!.encoding,
         delimiter: insp!.delimiter,
         columns,
+        options: {
+          account_map: cols!.account ? accountMap : undefined,
+          status_skip: cols!.status ? statusSkip : undefined,
+          use_bank_category: cols!.category ? useBankCat : false,
+        },
       });
       const res = await api.post<UploadResult>(`/uploads/${uploadId}/process`, { profile_id: p.id, account_id: account });
       if ("batch_id" in res) nav(`/batches/${res.batch_id}`);
@@ -119,7 +134,57 @@ export default function ProfileWizard() {
             )}
             {colSelect("counterparty", "Controparte")}
             {colSelect("notes", "Note")}
+            {colSelect("account", "Conto/carta per riga")}
+            {colSelect("status", "Stato contabile")}
+            {colSelect("category", "Categoria della banca")}
           </div>
+          {cols.account && (
+            <div className="subsection">
+              <b>Conto Firefly per ogni valore di "{cols.account}"</b>
+              <p className="muted small">Il file unisce più conti o carte: ogni riga va sul conto Firefly corrispondente.</p>
+              <table className="map-table">
+                <tbody>
+                  {accountValues.map((v) => (
+                    <tr key={v}>
+                      <td>
+                        <code>{v}</code>
+                      </td>
+                      <td>
+                        <AccountSelect value={accountMap[v]} onChange={(id) => setAccountMap((m) => ({ ...m, [v]: id }))} placeholder="conto del profilo" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!accountValues.length && <p className="muted small">Nessun valore trovato in questa colonna.</p>}
+            </div>
+          )}
+          {cols.status && (
+            <div className="subsection">
+              <b>Escludi le righe con stato</b>
+              <div className="desc-cols">
+                {statusValues.map((v) => (
+                  <label key={v} className={`chip ${statusSkip.includes(v) ? "on" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={statusSkip.includes(v)}
+                      onChange={() => setStatusSkip((s) => (s.includes(v) ? s.filter((x) => x !== v) : [...s, v]))}
+                    />
+                    {v}
+                  </label>
+                ))}
+              </div>
+              <p className="muted small">
+                Utile per i movimenti "non contabilizzati": possono ancora cambiare, meglio importarli col file successivo.
+              </p>
+            </div>
+          )}
+          {cols.category && (
+            <label className="check subsection">
+              <input type="checkbox" checked={useBankCat} onChange={(e) => setUseBankCat(e.target.checked)} /> usa la categoria della banca
+              quando né regole né storico ne propongono una (crea in Firefly le categorie con i nomi della banca)
+            </label>
+          )}
           <div className="desc-cols">
             Descrizione (anche più colonne, unite nell'ordine):
             {headers.map((h) => (

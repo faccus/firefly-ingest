@@ -68,6 +68,7 @@ export default function RulesPage() {
                     r.set_description && `descrizione: ${r.set_description}`,
                     r.set_tags?.length && `tag: ${r.set_tags.join(", ")}`,
                     r.set_transfer_account_id && `giroconto: ${accountName(r.set_transfer_account_id)}`,
+                    r.set_skip && "ignora",
                   ]
                     .filter(Boolean)
                     .join(" · ")}

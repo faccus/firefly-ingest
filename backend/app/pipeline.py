@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import db
+from . import db, history
 from .config import get_settings
 from .firefly import FireflyClient, FireflyError
 from .quicktext import parse_text
@@ -52,6 +52,7 @@ def create_batch(
     chat_id: int | None = None,
     unique: bool = False,
     overrides: list[dict[str, Any]] | None = None,
+    use_bank_category: bool = False,
 ) -> int:
     """Crea un lotto in revisione.
 
@@ -79,7 +80,7 @@ def create_batch(
     hit_counts: Counter[int] = Counter()
     for i, rec in enumerate(records):
         ov = (overrides[i] if overrides else None) or {}
-        acc = ov.get("account_id") or account_id
+        acc = ov.get("account_id") or rec.account_id or account_id
         key = f"{acc}|{rec.date}|{rec.amount}|{normalize_for_hash(rec.description)}"
         occ = occurrences[key]
         occurrences[key] += 1
@@ -102,13 +103,22 @@ def create_batch(
             "raw": rec.raw or None,
         }
         changes, rule_id = apply_rules(rules, row)
+        skip = changes.pop("skip", False)
         row.update(changes)
         row["rule_id"] = rule_id
+        if skip:
+            row["status"], row["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{rule_id}"
         if rule_id:
             hit_counts[rule_id] += 1
+        if changes.get("category"):
+            row["cat_source"] = "rule"
         for k, v in ov.items():
             if v not in (None, "", []):
                 row[k] = v
+                if k == "category":
+                    row["cat_source"] = "manual"
+        if use_bank_category and rec.bank_category and not row["category"] and not row["transfer_account_id"]:
+            row["category"], row["cat_source"] = rec.bank_category, "bank"
         if conn.execute("SELECT 1 FROM imported_hashes WHERE hash = ?", (h,)).fetchone():
             row["status"] = DUPLICATE
             row["dup_reason"] = "Già importata da questa app"
@@ -159,6 +169,40 @@ async def check_firefly_duplicates(conn: sqlite3.Connection, ff: FireflyClient, 
                 )
                 marked += 1
     return marked
+
+
+async def suggest_from_history(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int) -> int:
+    """Propone la categoria dalle transazioni simili in Firefly per le righe che non ne hanno
+    (o hanno solo quella della banca). Ritorna il numero di righe aggiornate."""
+    rows = db.to_dicts(
+        conn.execute(
+            "SELECT * FROM rows WHERE batch_id = ? AND status NOT IN (?, ?) AND transfer_account_id IS NULL "
+            "AND (category IS NULL OR cat_source = 'bank')",
+            (batch_id, IMPORTED, DUPLICATE),
+        ).fetchall()
+    )
+    if not rows:
+        return 0
+    try:
+        idx = await history.get_index(ff)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Storico Firefly non disponibile: %s", e)
+        return 0
+    n = 0
+    for r in rows:
+        s = idx.suggest(r["description"], r["counterparty"])
+        if s:
+            # il motivo del suggerimento resta nel raw, visibile in revisione
+            raw = {**(r["raw"] or {}), "_suggerimento": s[1]}
+            db.update(conn, "rows", r["id"], {"category": s[0], "cat_source": "history", "raw": raw})
+            n += 1
+    return n
+
+
+async def enrich_batch(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int) -> None:
+    """Controlli che richiedono Firefly: duplicati e suggerimenti dallo storico."""
+    await check_firefly_duplicates(conn, ff, batch_id)
+    await suggest_from_history(conn, ff, batch_id)
 
 
 # ---------- File ----------
@@ -220,8 +264,16 @@ def process_upload(
     if not records:
         raise TableError("Nessun movimento trovato nel file con questo profilo")
     acc = account_id or profile.get("account_id") or db.get_setting(conn, "default_account_id")
+    options = profile.get("options") or {}
     batch_id = create_batch(
-        conn, source=source, records=records, account_id=acc, filename=name, profile_id=profile["id"], chat_id=chat_id
+        conn,
+        source=source,
+        records=records,
+        account_id=acc,
+        filename=name,
+        profile_id=profile["id"],
+        chat_id=chat_id,
+        use_bank_category=bool(options.get("use_bank_category")),
     )
     return {"batch_id": batch_id, "profile": profile["name"], "rows": len(records)}
 
@@ -313,6 +365,22 @@ def build_split(row: dict[str, Any]) -> dict[str, Any]:
     return split
 
 
+async def find_existing_transfer(ff: FireflyClient, row: dict[str, Any]) -> str | None:
+    """Un giroconto compare negli estratti di entrambi i conti (es. addebito carta sul conto e
+    "ricevuta" sulla carta): se Firefly ha già il giroconto, non va creato di nuovo."""
+    d = date.fromisoformat(row["date"])
+    amount = Decimal(row["amount"])
+    try:
+        txs = await ff.account_transactions(str(row["transfer_account_id"]), d - timedelta(days=3), d + timedelta(days=3))
+    except FireflyError:
+        return None
+    for t in txs:
+        # visto dal conto controparte l'importo ha segno opposto
+        if t.type == "transfer" and t.amount == -amount:
+            return f"Giroconto già presente in Firefly (#{t.group_id}, {t.date})"
+    return None
+
+
 async def import_rows(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int, row_ids: list[int] | None = None) -> dict[str, int]:
     q = "SELECT * FROM rows WHERE batch_id = ? AND status IN (?, ?, ?)"
     params: list[Any] = [batch_id, READY, POSSIBLE_DUP, ERROR]
@@ -329,6 +397,12 @@ async def import_rows(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int
             db.update(conn, "rows", r["id"], {"status": ERROR, "error": "Conto non impostato"})
             result[ERROR] += 1
             continue
+        if r.get("transfer_account_id"):
+            existing = await find_existing_transfer(ff, r)
+            if existing:
+                db.update(conn, "rows", r["id"], {"status": DUPLICATE, "dup_reason": existing, "error": None})
+                result[DUPLICATE] += 1
+                continue
         try:
             fid = await ff.create_transaction(build_split(r))
         except FireflyError as e:
@@ -351,6 +425,8 @@ async def import_rows(conn: sqlite3.Connection, ff: FireflyClient, batch_id: int
         conn.commit()
         result[IMPORTED] += 1
     refresh_batch_status(conn, batch_id)
+    if result[IMPORTED]:
+        history.invalidate()
     return dict(result)
 
 
@@ -378,10 +454,20 @@ def reapply_rules(conn: sqlite3.Connection, batch_id: int) -> int:
     )
     changed = 0
     for r in rows:
-        changes, rule_id = apply_rules(rules, {**r, "description": r["description"], "counterparty": r["counterparty"]})
+        # i suggerimenti (storico/banca) non sono scelte dell'utente: una regola li sostituisce
+        base = {**r}
+        if r.get("cat_source") in ("history", "bank"):
+            base["category"] = None
+        changes, rule_id = apply_rules(rules, base)
+        if changes.pop("skip", False) and r["status"] == READY:
+            changes["status"], changes["dup_reason"] = SKIPPED, f"Ignorata dalla regola #{rule_id}"
         # descrizione/controparte non vengono riscritte in un riapplica
-        changes = {k: v for k, v in changes.items() if k not in ("description", "counterparty") and not r.get(k)}
+        changes = {k: v for k, v in changes.items() if k not in ("description", "counterparty") and not base.get(k)}
+        if changes.get("category") == r.get("category"):
+            changes.pop("category")
         if changes:
+            if "category" in changes:
+                changes["cat_source"] = "rule"
             changes["rule_id"] = r["rule_id"] or rule_id
             db.update(conn, "rows", r["id"], changes)
             changed += 1

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from . import db, pipeline
 from .firefly import FireflyError, get_firefly
 from .quicktext import QuickTextError
-from .tabular import TableError, guess_header_row, guess_mapping, headers_at
+from .tabular import TableError, distinct_values, guess_header_row, guess_mapping, headers_at
 
 router = APIRouter(prefix="/api")
 
@@ -25,6 +25,7 @@ class ProfileIn(BaseModel):
     decimal_sep: Literal[",", "."] | None = None
     invert_sign: bool = False
     columns: dict[str, Any]
+    options: dict[str, Any] | None = None
 
 
 class RuleIn(BaseModel):
@@ -43,6 +44,7 @@ class RuleIn(BaseModel):
     set_counterparty: str | None = None
     set_description: str | None = None
     set_transfer_account_id: str | None = None
+    set_skip: bool = False
     active: bool = True
 
 
@@ -156,6 +158,7 @@ def delete_profile(pid: int) -> dict[str, bool]:
 def _rule_values(body: RuleIn) -> dict[str, Any]:
     v = body.model_dump()
     v["active"] = int(body.active)
+    v["set_skip"] = int(body.set_skip)
     for k in ("set_category", "set_budget", "set_counterparty", "set_description", "set_transfer_account_id", "account_id", "name"):
         if v[k] == "":
             v[k] = None
@@ -226,7 +229,7 @@ def delete_alias(aid: int) -> dict[str, bool]:
 async def _finish_upload(result: dict[str, Any]) -> dict[str, Any]:
     if "batch_id" in result:
         with db.connect() as conn:
-            await pipeline.check_firefly_duplicates(conn, get_firefly(), result["batch_id"])
+            await pipeline.enrich_batch(conn, get_firefly(), result["batch_id"])
     return result
 
 
@@ -266,6 +269,7 @@ def inspect_upload(upload_id: str) -> dict[str, Any]:
         "headers": headers,
         "sample": sample,
         "guess": guess_mapping(headers),
+        "distinct": distinct_values(table, idx),
         "encoding": table.encoding,
         "delimiter": table.delimiter,
     }
@@ -296,6 +300,8 @@ async def quick_text(body: TextIn) -> dict[str, Any]:
             bid = pipeline.text_to_batch(conn, body.text, meta, account_id=body.account_id or None)
     except (QuickTextError, ValueError) as e:
         raise HTTPException(422, str(e)) from e
+    with db.connect() as conn:
+        await pipeline.suggest_from_history(conn, get_firefly(), bid)
     return {"batch_id": bid}
 
 
@@ -359,6 +365,8 @@ def patch_row(row_id: int, body: RowPatch) -> dict[str, Any]:
             raise HTTPException(409, "Riga già importata")
         if values.get("status") == "new" and r["status"] in (pipeline.DUPLICATE, pipeline.POSSIBLE_DUP):
             values["status"] = pipeline.POSSIBLE_DUP if r["status"] == pipeline.POSSIBLE_DUP else pipeline.READY
+        if "category" in values:
+            values["cat_source"] = "manual" if values["category"] else None
         db.update(conn, "rows", row_id, values)
         return db.to_dict(conn.execute("SELECT * FROM rows WHERE id = ?", (row_id,)).fetchone())  # type: ignore[return-value]
 

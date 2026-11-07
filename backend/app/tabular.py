@@ -17,10 +17,18 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
     "amount": ["importo", "amount", "ammontare"],
     "debit": ["uscite", "addebit", "dare", "debit", "uscita"],
     "credit": ["entrate", "accredit", "avere", "credit", "entrata"],
-    "description": ["descrizione", "causale", "dettagli", "description", "operazione", "concetto"],
+    "description": ["descrizione", "causale", "description", "operazione", "concetto", "parola chiave", "movimento"],
     "counterparty": ["beneficiario", "esercente", "controparte", "ordinante", "merchant", "payee"],
-    "notes": ["note", "notes", "riferimento"],
+    "notes": ["note", "notes", "riferimento", "osservazioni", "dettagli"],
+    # Conto/carta per riga (estratti che uniscono conto e carte, es. Intesa)
+    "account": ["conto o carta", "rapporto"],
+    # Categoria proposta dalla banca, usata solo come suggerimento di ripiego
+    "category": ["categoria"],
+    # Stato contabile (es. CONTABILIZZATO / NON CONTABILIZZATO)
+    "status": ["contabilizzazione", "stato"],
 }
+SINGLE_FIELDS = ["value_date", "date", "debit", "credit", "amount", "account", "status", "category", "counterparty", "notes"]
+MAX_DISTINCT = 20
 
 
 class TableError(Exception):
@@ -42,6 +50,8 @@ class Record:
     counterparty: str | None = None
     notes: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    account_id: str | None = None  # conto Firefly per riga (da options.account_map)
+    bank_category: str | None = None
 
 
 def _norm(s: Any) -> str:
@@ -144,18 +154,39 @@ def guess_mapping(headers: list[str]) -> dict[str, Any]:
     """Prima ipotesi di mapping colonne -> campi, a partire dai nomi."""
     mapping: dict[str, Any] = {k: None for k in FIELD_KEYWORDS}
     used: set[str] = set()
-    for fld in ["value_date", "date", "debit", "credit", "amount", "counterparty", "notes", "description"]:
+    for fld in SINGLE_FIELDS:
         for kw in FIELD_KEYWORDS[fld]:
             hit = next((h for h in headers if h and h not in used and kw in h.lower()), None)
             if hit:
                 mapping[fld] = hit
                 used.add(hit)
                 break
-    mapping["description"] = [mapping["description"]] if mapping["description"] else []
+    # La descrizione può unire più colonne, nell'ordine del file
+    mapping["description"] = [
+        h
+        for h in headers
+        if h and h not in used and "data" not in h.lower() and any(k in h.lower() for k in FIELD_KEYWORDS["description"])
+    ]
+    if not mapping["description"] and mapping["notes"]:
+        mapping["description"], mapping["notes"] = [mapping["notes"]], None
     if mapping["amount"]:
         mapping["debit"] = mapping["credit"] = None
     mapping.pop("value_date", None)
     return mapping
+
+
+def distinct_values(table: Table, header_idx: int, limit_rows: int = 2000) -> dict[str, list[str]]:
+    """Valori distinti delle colonne "a categorie" (pochi valori), per mappare conti e stati."""
+    headers = headers_at(table.rows, header_idx)
+    seen: dict[int, set[str]] = {i: set() for i in range(len(headers))}
+    for row in table.rows[header_idx + 1 : header_idx + 1 + limit_rows]:
+        for i, c in enumerate(row[: len(headers)]):
+            v = clean_text(c)
+            if v and i in seen:
+                seen[i].add(v)
+                if len(seen[i]) > MAX_DISTINCT:
+                    del seen[i]
+    return {headers[i]: sorted(vals) for i, vals in seen.items() if headers[i] and vals}
 
 
 def profile_columns(columns: dict[str, Any]) -> list[str]:
@@ -207,6 +238,12 @@ def extract_records(table: Table, profile: dict[str, Any]) -> list[Record]:
     i_desc = [i for i in (col_index(c) for c in desc_cols) if i is not None]
     i_cp = col_index(cols.get("counterparty"))
     i_notes = col_index(cols.get("notes"))
+    i_account = col_index(cols.get("account"))
+    i_category = col_index(cols.get("category"))
+    i_status = col_index(cols.get("status"))
+    options: dict[str, Any] = profile.get("options") or {}
+    account_map = {clean_text(k).casefold(): v for k, v in (options.get("account_map") or {}).items() if v}
+    status_skip = {clean_text(v).casefold() for v in options.get("status_skip") or []}
     dec = profile.get("decimal_sep") or None
     invert = bool(profile.get("invert_sign"))
     raw_headers = [clean_text(h) for h in table.rows[header_idx]]
@@ -223,6 +260,15 @@ def extract_records(table: Table, profile: dict[str, Any]) -> list[Record]:
         d = parse_date(cell(row, i_date), profile.get("date_format") or None)
         if d is None:
             continue  # righe di totale/saldo/footer
+        if i_status is not None and clean_text(cell(row, i_status)).casefold() in status_skip:
+            continue  # es. movimenti non ancora contabilizzati
+        row_account = None
+        if i_account is not None:
+            av = clean_text(cell(row, i_account)).casefold()
+            if av in account_map:
+                row_account = str(account_map[av])
+            elif account_map.get("*"):
+                row_account = str(account_map["*"])
         if i_amount is not None:
             amount = parse_amount(cell(row, i_amount), dec)
         else:
@@ -240,5 +286,16 @@ def extract_records(table: Table, profile: dict[str, Any]) -> list[Record]:
         counterparty = clean_text(cell(row, i_cp)) or None
         notes = clean_text(cell(row, i_notes)) or None
         raw = {raw_headers[j] or f"col{j}": (str(v) if v is not None else None) for j, v in enumerate(row) if j < len(raw_headers)}
-        out.append(Record(date=d, amount=amount, description=description or counterparty or "(senza descrizione)", counterparty=counterparty, notes=notes, raw=raw))
+        out.append(
+            Record(
+                date=d,
+                amount=amount,
+                description=description or counterparty or notes or "(senza descrizione)",
+                counterparty=counterparty,
+                notes=notes,
+                raw=raw,
+                account_id=row_account,
+                bank_category=clean_text(cell(row, i_category)) or None,
+            )
+        )
     return out

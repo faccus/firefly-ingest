@@ -20,6 +20,7 @@ export const emptyRule: RuleDraft = {
   set_counterparty: null,
   set_description: null,
   set_transfer_account_id: null,
+  set_skip: false,
   active: true,
 };
 
@@ -31,7 +32,7 @@ export default function RuleForm({ initial, onSaved, onCancel }: { initial: Rule
 
   async function save() {
     setError(null);
-    const body = { ...r, active: !!r.active };
+    const body = { ...r, active: !!r.active, set_skip: !!r.set_skip };
     delete (body as { id?: number }).id;
     try {
       if (r.id) await api.put(`/rules/${r.id}`, body);
@@ -122,7 +123,16 @@ export default function RuleForm({ initial, onSaved, onCancel }: { initial: Rule
             Giroconto con
             <AccountSelect value={r.set_transfer_account_id} onChange={(v) => set("set_transfer_account_id", v)} placeholder="no" />
           </label>
+          <label className="check">
+            <input type="checkbox" checked={!!r.set_skip} onChange={(e) => set("set_skip", e.target.checked)} /> ignora la riga (non importarla)
+          </label>
         </div>
+        {r.match_type === "regex" && (
+          <p className="muted small">
+            Con una regex puoi riusare parti del testo: <code>^(?:Verso|Da) (?P&lt;nome&gt;.+?) Data</code> e controparte <code>{"{nome}"}</code>{" "}
+            (oppure <code>{"{1}"}</code>). I nomi tutti maiuscoli diventano "Mario Rossi".
+          </p>
+        )}
       </fieldset>
       <div className="fgrid">
         <label>

@@ -97,3 +97,25 @@ def test_quick_text(ff_mock):
         rows = c.get(f"/api/batches/{r.json()['batch_id']}").json()["rows"]
         assert rows[0]["account_id"] == "2" and rows[0]["category"] == "Cene"
         assert rows[1]["account_id"] == "1" and rows[1]["amount"] == "-3.00"
+
+
+def test_transfer_dedupe_and_skip_rule(ff_mock):
+    # Sul conto carta (id 2) Firefly ha già il giroconto creato dall'estratto del conto
+    ff_mock.get(f"{FF}/accounts/2/transactions").respond(
+        json=page([{"id": "77", "attributes": {"transactions": [
+            {"date": "2026-11-05T00:00:00+01:00", "amount": "300.00", "type": "transfer", "source_id": "1",
+             "destination_id": "2", "description": "Saldo carta", "external_id": "x"}]}}])
+    )
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"default_account_id": "1"})
+        c.post("/api/rules", json={"pattern": "saldo carta", "set_transfer_account_id": "2"})
+        c.post("/api/rules", json={"pattern": "autorizzazione", "set_skip": True})
+        bid = c.post("/api/text", json={"text": "300 saldo carta 5/11\n10 autorizzazione"}).json()["batch_id"]
+        rows = c.get(f"/api/batches/{bid}").json()["rows"]
+        assert rows[0]["transfer_account_id"] == "2" and rows[0]["status"] == "new"
+        assert rows[1]["status"] == "skipped"
+        res = c.post(f"/api/batches/{bid}/import", json={}).json()
+        assert res == {"imported": 0, "duplicate": 1, "error": 0}
+        assert ff_mock.created == []
+        rows = c.get(f"/api/batches/{bid}").json()["rows"]
+        assert "Giroconto già presente" in rows[0]["dup_reason"]

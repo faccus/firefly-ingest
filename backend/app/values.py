@@ -1,5 +1,6 @@
 """Parsing di importi e date nei formati tipici delle banche italiane."""
 
+import html
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -108,7 +109,7 @@ def parse_date(value: Any, fmt: str | None = None) -> date | None:
 def clean_text(value: Any) -> str:
     if value is None:
         return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
+    return re.sub(r"\s+", " ", html.unescape(str(value))).strip()
 
 
 def normalize_for_hash(text: str) -> str:

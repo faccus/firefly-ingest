@@ -25,6 +25,7 @@ class ExistingTx:
     description: str
     external_id: str | None
     group_id: str
+    type: str = ""
 
 
 class FireflyClient:
@@ -120,9 +121,22 @@ class FireflyClient:
                         description=t.get("description") or "",
                         external_id=t.get("external_id"),
                         group_id=str(g["id"]),
+                        type=t.get("type") or "",
                     )
                 )
         return out
+
+    async def all_transactions(self, months: int) -> list[dict[str, Any]]:
+        """Gruppi di transazioni degli ultimi `months` mesi (per lo storico)."""
+        end = date.today()
+        start = date(end.year - (months // 12), end.month, 1)
+        if months % 12:
+            m = start.month - months % 12
+            start = date(start.year - (1 if m <= 0 else 0), m + 12 if m <= 0 else m, 1)
+        async with self._client() as c:
+            return await self._get_all(
+                c, "/transactions", {"start": start.isoformat(), "end": end.isoformat(), "type": "all"}
+            )
 
     async def create_transaction(self, split: dict[str, Any], apply_rules: bool | None = None) -> str:
         if apply_rules is None:
