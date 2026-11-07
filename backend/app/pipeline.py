@@ -558,6 +558,8 @@ def derive_row(rules: list[dict[str, Any]], row: dict[str, Any], use_bank_catego
     originali del file e conservando quelli modificati a mano (row["manual"]).
     Ritorna (campi, ignora)."""
     manual = set(row.get("manual") or [])
+    if row.get("cat_source") == "manual":
+        manual.add("category")  # righe create prima del tracciamento delle modifiche manuali
     base = {**row}
     has_orig = row.get("orig_description") is not None
     if "description" not in manual and has_orig:
