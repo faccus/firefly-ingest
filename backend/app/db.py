@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS rows (
     orig_counterparty TEXT,
     bank_category TEXT,
     manual TEXT,
+    selected INTEGER,
     firefly_id TEXT,
     error TEXT,
     raw TEXT
@@ -112,6 +113,7 @@ MIGRATIONS = [
     ("rows", "orig_counterparty", "TEXT"),
     ("rows", "bank_category", "TEXT"),
     ("rows", "manual", "TEXT"),
+    ("rows", "selected", "INTEGER"),
 ]
 
 JSON_FIELDS = {"columns", "options", "tags", "set_tags", "raw", "manual"}

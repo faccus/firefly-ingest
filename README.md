@@ -18,13 +18,23 @@ file / testo / Telegram
                    regole locali ── categoria, budget, tag, controparte, giroconto
                          │
                          ▼
-                   revisione (web o bot) ──► POST /api/v1/transactions
+                   revisione del lotto (web o bot) ──► «Approva»: il lotto va in coda, nulla parte
+                         │
+                         ▼
+                   «Da inviare»: anteprima unica di tutti i lotti approvati ──► conferma ──► POST /api/v1/transactions
 ```
+
+- **Lotti e coda**: ogni file (o messaggio di testo rapido) diventa un lotto. Nel lotto scegli le righe e le correggi,
+  poi lo approvi: le righe selezionate entrano nella coda «Da inviare». Quando hai approvato tutti i file del mese,
+  dalla coda apri l'anteprima complessiva e confermi l'invio: è l'unico punto in cui si scrive in Firefly.
+  Un lotto approvato è bloccato; «Riapri» lo rimette in revisione.
+  Se lo stesso giroconto compare negli estratti di entrambi i conti (es. pagamento carta sul conto e accredito sulla
+  carta), nella coda viene creato una volta sola.
 
 - **Profili banca**: al primo file di una banca la web app mostra le colonne e ti fa scegliere data, importo
   (unico o uscite/entrate), descrizione e controparte. I file successivi vengono riconosciuti in automatico dalle intestazioni.
 - **Regole**: corrispondenza su descrizione, controparte o note (contiene / inizia con / uguale / regex), con filtri su
-  direzione, conto e importo. Si applicano in ordine di priorità e ogni regola riempie solo i campi ancora vuoti.
+  direzione, conto e importo. Si applicano in ordine di priorità: per ogni campo vince la prima regola che lo imposta; le modifiche a mano restano.
   Dalla revisione, "+ regola" crea una regola dalla riga e la riapplica al lotto.
 - **Deduplica**:
   - `duplicata`: la riga è già stata importata da questa app (stesso hash), oppure Firefly ha già l'`external_id`.

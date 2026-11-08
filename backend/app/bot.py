@@ -46,7 +46,7 @@ def _web_link(path: str) -> str | None:
 def _keyboard(batch_id: int, n_ready: int) -> InlineKeyboardMarkup:
     buttons = []
     if n_ready:
-        buttons.append(InlineKeyboardButton(f"✅ Importa ({n_ready})", callback_data=f"imp:{batch_id}"))
+        buttons.append(InlineKeyboardButton(f"✅ Approva ({n_ready})", callback_data=f"ok:{batch_id}"))
     buttons.append(InlineKeyboardButton("🗑 Annulla", callback_data=f"del:{batch_id}"))
     rows = [buttons]
     link = _web_link(f"/batches/{batch_id}")
@@ -185,18 +185,19 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
             await q.edit_message_text("🗑 Annullato.")
             return
-        if action == "imp":
-            res = await pipeline.import_rows(conn, get_firefly(), batch_id)
-    parts = [f"✅ Importate {res['imported']}"]
-    if res.get("duplicate"):
-        parts.append(f"⛔ duplicate {res['duplicate']}")
-    if res.get("error"):
-        parts.append(f"❌ errori {res['error']}")
-    link = _web_link(f"/batches/{batch_id}")
+        if action not in ("ok", "imp"):  # "imp": pulsanti di messaggi precedenti
+            return
+        if not pipeline.selected_rows(conn, batch_id):
+            await q.edit_message_text("Nessuna riga da inviare in questo lotto.")
+            return
+        pipeline.set_batch_status(conn, batch_id, pipeline.B_APPROVED)
+        n = len(pipeline.pending_rows(conn))
+    link = _web_link("/pending")
     await q.edit_message_text(
-        (q.message.text_html if q.message else "") + "\n\n" + " · ".join(parts),  # type: ignore[union-attr]
+        (q.message.text_html if q.message else "")  # type: ignore[union-attr]
+        + f"\n\n✅ Approvato. In coda per Firefly: {n} transazioni, da confermare dalla pagina «Da inviare».",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Apri lotto", url=link)]]) if link and res.get("error") else None,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📤 Da inviare", url=link)]]) if link else None,
     )
 
 

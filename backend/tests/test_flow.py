@@ -74,9 +74,14 @@ def test_full_flow(ff_mock):
         assert statuses == ["new", "possible_duplicate", "new"]
         assert b["rows"][0]["category"] == "Spesa" and b["rows"][0]["counterparty"] == "Esselunga"
 
-        # 3. import di default: solo le righe pronte
-        r = c.post(f"/api/batches/{bid}/import", json={})
+        # 3. approvare il lotto non invia nulla: le righe pronte finiscono in coda
+        assert c.post(f"/api/batches/{bid}/approve").status_code == 200
+        assert ff_mock.created == []
+        assert c.get("/api/pending/count").json() == {"rows": 2}
+        assert c.patch(f"/api/rows/{b['rows'][0]['id']}", json={"category": "X"}).status_code == 409
+        r = c.post("/api/pending/import", json={})
         assert r.json() == {"imported": 2, "duplicate": 0, "error": 0}
+        assert c.get(f"/api/batches/{bid}").json()["status"] == "done"
         split = ff_mock.created[0]["transactions"][0]
         assert split["type"] == "withdrawal" and split["source_id"] == "1"
         assert split["destination_name"] == "Esselunga" and split["amount"] == "45.30"
@@ -116,7 +121,8 @@ def test_transfer_dedupe_and_skip_rule(ff_mock):
         rows = c.get(f"/api/batches/{bid}").json()["rows"]
         assert rows[0]["transfer_account_id"] == "2" and rows[0]["status"] == "new"
         assert rows[1]["status"] == "skipped"
-        res = c.post(f"/api/batches/{bid}/import", json={}).json()
+        c.post(f"/api/batches/{bid}/approve")
+        res = c.post("/api/pending/import", json={}).json()
         assert res == {"imported": 0, "duplicate": 1, "error": 0}
         assert ff_mock.created == []
         rows = c.get(f"/api/batches/{bid}").json()["rows"]
@@ -131,7 +137,10 @@ def test_preview_matches_import(ff_mock):
         bid = c.post("/api/text", json={"text": "12.50 pizza ieri #Cene\n+40 rimborso #Rimborsi !amici\n10 autorizzazione"}).json()["batch_id"]
         rows = c.get(f"/api/batches/{bid}").json()["rows"]
         ids = [r["id"] for r in rows]
-        p = c.post(f"/api/batches/{bid}/preview", json={"row_ids": ids}).json()
+        # la riga esclusa dalla regola viene inclusa a mano
+        c.post(f"/api/batches/{bid}/selection", json={"row_ids": [ids[2]], "selected": True})
+        c.post(f"/api/batches/{bid}/approve")
+        p = c.post("/api/pending/preview").json()
         a, b, s = p["items"]
         assert (a["type"], a["source"], a["destination"], a["amount"], a["category"]) == ("withdrawal", "Conto Corrente", "Pizzeria", "12.50", "Cene")
         assert (b["type"], b["destination"], b["tags"]) == ("deposit", "Conto Corrente", ["amici"])
@@ -139,7 +148,7 @@ def test_preview_matches_import(ff_mock):
         assert p["new_categories"] == ["Rimborsi"] and p["new_tags"] == ["amici"] and p["new_counterparties"] == []
         assert p["summary"]["by_type"] == {"uscita": {"count": 2, "total": "22.50"}, "entrata": {"count": 1, "total": "40.00"}}
         # l'invio usa gli stessi dati: anche la riga esclusa, perché scelta esplicitamente
-        assert c.post(f"/api/batches/{bid}/import", json={"row_ids": ids}).json()["imported"] == 3
+        assert c.post("/api/pending/import", json={"row_ids": [i["row_id"] for i in p["items"]]}).json()["imported"] == 3
         sent = [t["transactions"][0] for t in ff_mock.created]
         assert [(x["type"], x["amount"]) for x in sent] == [("withdrawal", "12.50"), ("deposit", "40.00"), ("withdrawal", "10.00")]
 
@@ -169,3 +178,31 @@ def test_reapply_recomputes_but_keeps_manual_edits(ff_mock):
         c.patch(f"/api/rows/{rows[2]['id']}", json={"category": ""})
         c.post(f"/api/batches/{bid}/reapply-rules")
         assert c.get(f"/api/batches/{bid}").json()["rows"][2]["category"] == "Colazione"
+
+
+def test_pending_queue_across_batches_pairs_transfers(ff_mock):
+    """Due estratti dello stesso mese: il pagamento della carta compare su entrambi,
+    ma in Firefly deve nascere un solo giroconto. Nulla parte finché non si conferma."""
+    ff_mock.get(f"{FF}/accounts/2/transactions").respond(json=page([]))
+    with TestClient(app) as c:
+        c.post("/api/rules", json={"pattern": "saldo carta", "set_transfer_account_id": "2"})
+        c.post("/api/rules", json={"pattern": "ricarica da conto", "set_transfer_account_id": "1"})
+        conto = c.post("/api/text", json={"text": "300 saldo carta 5/11 @conto\n20 bar 6/11 @conto"})
+        carta = c.post("/api/text", json={"text": "+300 ricarica da conto 6/11 @carta\n15 cinema 7/11 @carta"})
+        b1, b2 = conto.json()["batch_id"], carta.json()["batch_id"]
+        c.post(f"/api/batches/{b1}/approve")
+        assert c.get("/api/pending").json()["review"][0]["id"] == b2  # ancora da approvare
+        c.post(f"/api/batches/{b2}/approve")
+
+        p = c.post("/api/pending/preview").json()
+        assert len(p["items"]) == 4 and p["summary"]["count"] == 3 and p["summary"]["not_created"] == 1
+        mirror = next(i for i in p["items"] if not i["creates"])
+        assert mirror["batch_id"] == b2 and "Contropartita del giroconto" in mirror["warnings"][0]
+        assert ff_mock.created == []
+
+        res = c.post("/api/pending/import", json={"row_ids": [i["row_id"] for i in p["items"]]}).json()
+        assert res == {"imported": 3, "duplicate": 1, "error": 0}
+        transfers = [t["transactions"][0] for t in ff_mock.created if t["transactions"][0]["type"] == "transfer"]
+        assert len(transfers) == 1 and (transfers[0]["source_id"], transfers[0]["destination_id"]) == ("1", "2")
+        assert c.get("/api/pending/count").json() == {"rows": 0}
+        assert {b["status"] for b in c.get("/api/batches").json()} == {"done"}

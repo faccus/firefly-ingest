@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, Batch, fmtAmount, fmtDate, Row, RowStatus } from "../api";
 import { AccountSelect, useMeta } from "../meta";
 import RuleForm, { emptyRule } from "./RuleForm";
 import PreviewModal, { Preview } from "./PreviewModal";
 import Modal from "../Modal";
+import { notifyPending } from "../pending";
 
 const STATUS_LABEL: Record<RowStatus, string> = {
   new: "pronta",
@@ -43,9 +44,8 @@ function suggestPattern(r: Row): string {
 export default function BatchPage() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { meta, reload: reloadMeta } = useMeta();
+  const { meta } = useMeta();
   const [batch, setBatch] = useState<Batch | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<Filter>("all");
   const [ruleFor, setRuleFor] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,18 +53,15 @@ export default function BatchPage() {
   const [bulkCat, setBulkCat] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  const load = useCallback(
-    async (resetSelection = false) => {
-      const b = await api.get<Batch>(`/batches/${id}`);
-      setBatch(b);
-      if (resetSelection) setSelected(new Set(b.rows!.filter((r) => r.status === "new" || r.status === "error").map((r) => r.id)));
-    },
-    [id],
-  );
+  const load = useCallback(async () => {
+    setBatch(await api.get<Batch>(`/batches/${id}`));
+  }, [id]);
 
   useEffect(() => {
-    load(true).catch((e) => setMsg({ kind: "err", text: e.message }));
+    load().catch((e) => setMsg({ kind: "err", text: e.message }));
   }, [load]);
+
+  const approved = batch?.status === "approved";
 
   const rows = batch?.rows ?? [];
   const visible = useMemo(() => {
@@ -80,17 +77,21 @@ export default function BatchPage() {
     }
   }, [rows, filter]);
 
-  const selectable = (r: Row) => r.status !== "imported";
-  const selectedRows = rows.filter((r) => selected.has(r.id) && selectable(r));
+  const selectable = (r: Row) => r.status !== "imported" && !approved;
+  const selectedRows = rows.filter((r) => r.selected && r.status !== "imported");
   const total = selectedRows.reduce((s, r) => s + parseFloat(r.amount), 0);
 
-  function toggle(rid: number) {
-    setSelected((s) => {
-      const n = new Set(s);
-      if (n.has(rid)) n.delete(rid);
-      else n.add(rid);
-      return n;
-    });
+  // la selezione è salvata sul server: è ciò che verrà inviato quando il lotto è approvato
+  async function setSelection(ids: number[], value: boolean) {
+    if (!ids.length) return;
+    const set = new Set(ids);
+    setBatch((b) => (b ? { ...b, rows: b.rows!.map((x) => (set.has(x.id) ? { ...x, selected: value } : x)) } : b));
+    try {
+      await api.post(`/batches/${id}/selection`, { row_ids: ids, selected: value });
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+      load();
+    }
   }
 
   async function patch(r: Row, values: Partial<Row>) {
@@ -107,7 +108,7 @@ export default function BatchPage() {
     setBusy(true);
     setMsg(null);
     try {
-      setPreview(await api.post<Preview>(`/batches/${id}/preview`, { row_ids: selectedRows.map((r) => r.id) }));
+      setPreview(await api.post<Preview>(`/batches/${id}/preview`));
     } catch (e) {
       setMsg({ kind: "err", text: (e as Error).message });
     } finally {
@@ -115,20 +116,13 @@ export default function BatchPage() {
     }
   }
 
-  async function doImport(rowIds: number[]) {
+  async function setStatus(action: "approve" | "reopen") {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await api.post<{ imported: number; duplicate: number; error: number }>(`/batches/${id}/import`, {
-        row_ids: rowIds,
-      });
-      setPreview(null);
-      setMsg({
-        kind: res.error ? "err" : "ok",
-        text: `Importate ${res.imported}` + (res.duplicate ? ` · rifiutate come duplicate ${res.duplicate}` : "") + (res.error ? ` · errori ${res.error}` : ""),
-      });
-      await load(true);
-      reloadMeta(true);
+      await api.post(`/batches/${id}/${action}`);
+      await load();
+      notifyPending();
     } catch (e) {
       setMsg({ kind: "err", text: (e as Error).message });
     } finally {
@@ -176,19 +170,50 @@ export default function BatchPage() {
           </div>
           <div className="actions">
             <button onClick={deleteBatch} className="ghost">Elimina lotto</button>
-            <button
-              onClick={() => reapplyRules()}
-              disabled={busy}
-              title="Ricalcola le righe con le regole attuali. Le modifiche fatte a mano restano; svuota un campo per restituirlo alle regole."
-            >
-              ↻ Riapplica regole
-            </button>
-            <button className="primary" disabled={busy || !selectedRows.length} onClick={openPreview}>
-              {busy ? "Attendi…" : `Anteprima e importa ${selectedRows.length}`}
-              {selectedRows.length > 0 && <small> ({fmtAmount(total)})</small>}
-            </button>
+            {approved ? (
+              <button onClick={() => setStatus("reopen")} disabled={busy}>Riapri per modificare</button>
+            ) : (
+              <>
+                <button
+                  onClick={() => reapplyRules()}
+                  disabled={busy}
+                  title="Ricalcola le righe con le regole attuali. Le modifiche fatte a mano restano; svuota un campo per restituirlo alle regole."
+                >
+                  ↻ Riapplica regole
+                </button>
+                <button disabled={busy || !selectedRows.length} onClick={openPreview} title="Cosa verrà creato in Firefly da questo lotto (non invia nulla)">
+                  Anteprima
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy || !selectedRows.length}
+                  onClick={() => setStatus("approve")}
+                  title="Mette in coda le righe selezionate. L'invio a Firefly si conferma dalla pagina Da inviare, insieme agli altri lotti."
+                >
+                  {busy ? "Attendi…" : `Approva ${selectedRows.length}`}
+                  {selectedRows.length > 0 && <small> ({fmtAmount(total)})</small>}
+                </button>
+              </>
+            )}
           </div>
         </div>
+        {approved && (
+          <div className="alert ok">
+            Lotto approvato: {selectedRows.length} righe in coda. Quando hai approvato tutti i lotti, conferma l'invio da{" "}
+            <Link to="/pending">Da inviare</Link>.
+          </div>
+        )}
+        {batch.status === "done" && (
+          <div className="alert ok row-between">
+            <span>
+              Lotto inviato a Firefly.
+              {rows.some((r) => r.status !== "imported") && " Le righe non inviate restano qui: riaprilo per inviarne altre."}
+            </span>
+            {rows.some((r) => r.status !== "imported") && (
+              <button className="small" onClick={() => setStatus("reopen")}>Riapri</button>
+            )}
+          </div>
+        )}
         {msg && <div className={`alert ${msg.kind}`}>{msg.text}</div>}
         <div className="row-between toolbar">
           <div className="tabs">
@@ -206,8 +231,8 @@ export default function BatchPage() {
             ))}
           </div>
           <div className="bulk">
-            <input list="dl-categories" placeholder="Categoria per le selezionate" value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} />
-            <button disabled={!selectedRows.length} onClick={bulkCategory}>Applica</button>
+            <input list="dl-categories" placeholder="Categoria per le selezionate" value={bulkCat} disabled={approved} onChange={(e) => setBulkCat(e.target.value)} />
+            <button disabled={!selectedRows.length || approved} onClick={bulkCategory}>Applica</button>
           </div>
         </div>
       </section>
@@ -219,14 +244,9 @@ export default function BatchPage() {
               <th>
                 <input
                   type="checkbox"
-                  checked={visible.filter(selectable).length > 0 && visible.filter(selectable).every((r) => selected.has(r.id))}
-                  onChange={(e) =>
-                    setSelected((s) => {
-                      const n = new Set(s);
-                      visible.filter(selectable).forEach((r) => (e.target.checked ? n.add(r.id) : n.delete(r.id)));
-                      return n;
-                    })
-                  }
+                  disabled={approved}
+                  checked={visible.filter(selectable).length > 0 && visible.filter(selectable).every((r) => r.selected)}
+                  onChange={(e) => setSelection(visible.filter(selectable).map((r) => r.id), e.target.checked)}
                 />
               </th>
               <th>Data</th>
@@ -242,12 +262,12 @@ export default function BatchPage() {
           </thead>
           <tbody>
             {visible.map((r) => {
-              const locked = r.status === "imported";
+              const locked = r.status === "imported" || approved;
               const out = parseFloat(r.amount) < 0;
               return (
                 <tr key={r.id} className={`st-${r.status}`}>
                   <td>
-                    <input type="checkbox" disabled={locked} checked={selected.has(r.id) && !locked} onChange={() => toggle(r.id)} />
+                    <input type="checkbox" disabled={locked} checked={r.selected && r.status !== "imported"} onChange={() => setSelection([r.id], !r.selected)} />
                   </td>
                   <td className="nowrap">{fmtDate(r.date)}</td>
                   <td className="desc">
@@ -266,7 +286,12 @@ export default function BatchPage() {
                   <td>
                     {r.transfer_account_id ? (
                       <div className="transfer">
-                        ↔ <AccountSelect value={r.transfer_account_id} onChange={(v) => patch(r, { transfer_account_id: v })} />
+                        ↔{" "}
+                        {locked ? (
+                          <AccountName id={r.transfer_account_id} />
+                        ) : (
+                          <AccountSelect value={r.transfer_account_id} onChange={(v) => patch(r, { transfer_account_id: v })} />
+                        )}
                       </div>
                     ) : (
                       <div className="catcell">
@@ -322,7 +347,7 @@ export default function BatchPage() {
         </table>
       </section>
 
-      {preview && <PreviewModal preview={preview} busy={busy} onConfirm={doImport} onCancel={() => setPreview(null)} />}
+      {preview && <PreviewModal preview={preview} busy={busy} onCancel={() => setPreview(null)} />}
 
       {ruleFor && (
         <Modal onClose={() => setRuleFor(null)}>

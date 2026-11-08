@@ -32,6 +32,7 @@ export type Row = {
   firefly_id: string | null;
   error: string | null;
   raw: Record<string, string | null> | null;
+  selected: boolean;
 };
 
 export type Batch = {
@@ -40,9 +41,11 @@ export type Batch = {
   filename: string | null;
   profile_id: number | null;
   account_id: string | null;
-  status: "review" | "done";
+  status: "review" | "approved" | "done";
   created_at: string;
   counts: Partial<Record<RowStatus, number>>;
+  selected: number;
+  selected_total: string;
   rows?: Row[];
 };
 

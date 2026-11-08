@@ -167,3 +167,4 @@ details.mini { margin: 0; font-size: 11px; }
 .modal > .card.wide-modal { width: min(1200px, 100%); }
 .preview-table { max-height: 60vh; overflow: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
 .grid tr.st-error td { background: color-mix(in srgb, var(--err-bg) 50%, transparent); }
+.pill.badge { background: var(--accent); color: var(--accent-fg); margin-left: 2px; }

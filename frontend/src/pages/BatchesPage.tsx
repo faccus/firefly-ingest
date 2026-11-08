@@ -4,6 +4,11 @@ import { api, Batch } from "../api";
 import { StatusCounts } from "./BatchPage";
 
 const SOURCE: Record<string, string> = { web: "Web", telegram: "Telegram" };
+const STATUS: Record<Batch["status"], JSX.Element> = {
+  review: <span className="pill">da rivedere</span>,
+  approved: <span className="pill st-possible_duplicate">approvato, da inviare</span>,
+  done: <span className="pill ok">inviato</span>,
+};
 
 export default function BatchesPage() {
   const [batches, setBatches] = useState<Batch[] | null>(null);
@@ -35,7 +40,7 @@ export default function BatchesPage() {
               <td>{new Date(b.created_at).toLocaleString("it-IT")}</td>
               <td>{SOURCE[b.source] ?? b.source}</td>
               <td>{b.filename ?? <span className="muted">testo</span>}</td>
-              <td>{b.status === "done" ? <span className="pill ok">completato</span> : <span className="pill">da rivedere</span>}</td>
+              <td>{STATUS[b.status]}</td>
               <td>
                 <StatusCounts counts={b.counts} />
               </td>

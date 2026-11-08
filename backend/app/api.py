@@ -60,6 +60,7 @@ class RowPatch(BaseModel):
     tags: list[str] | None = None
     transfer_account_id: str | None = None
     status: Literal["new", "skipped"] | None = None
+    selected: bool | None = None
 
 
 class AliasIn(BaseModel):
@@ -314,17 +315,33 @@ def list_batches() -> list[dict[str, Any]]:
         batches = db.to_dicts(conn.execute("SELECT * FROM batches ORDER BY id DESC LIMIT 200").fetchall())
         for b in batches:
             b["counts"] = pipeline.batch_counts(conn, b["id"])
+            b.update(pipeline.batch_selection(conn, b["id"]))
     return batches
+
+
+def _batch_or_404(conn: Any, bid: int) -> dict[str, Any]:
+    b = db.to_dict(conn.execute("SELECT * FROM batches WHERE id = ?", (bid,)).fetchone())
+    if not b:
+        raise HTTPException(404, "Lotto non trovato")
+    return b
+
+
+def _editable(conn: Any, bid: int) -> dict[str, Any]:
+    b = _batch_or_404(conn, bid)
+    if b["status"] == pipeline.B_APPROVED:
+        raise HTTPException(409, "Lotto approvato: riaprilo per modificarlo")
+    return b
 
 
 @router.get("/batches/{bid}")
 def get_batch(bid: int) -> dict[str, Any]:
     with db.connect() as conn:
-        b = db.to_dict(conn.execute("SELECT * FROM batches WHERE id = ?", (bid,)).fetchone())
-        if not b:
-            raise HTTPException(404, "Lotto non trovato")
-        b["rows"] = db.to_dicts(conn.execute("SELECT * FROM rows WHERE batch_id = ? ORDER BY idx", (bid,)).fetchall())
+        b = _batch_or_404(conn, bid)
+        b["rows"] = pipeline.batch_rows(conn, bid)
+        for r in b["rows"]:
+            r["selected"] = pipeline.is_selected(r)
         b["counts"] = pipeline.batch_counts(conn, bid)
+        b.update(pipeline.batch_selection(conn, bid))
     return b
 
 
@@ -338,30 +355,97 @@ def delete_batch(bid: int) -> dict[str, bool]:
 @router.post("/batches/{bid}/reapply-rules")
 async def reapply(bid: int) -> dict[str, int]:
     with db.connect() as conn:
+        _editable(conn, bid)
         changed = pipeline.reapply_rules(conn, bid)
         suggested = await pipeline.suggest_from_history(conn, get_firefly(), bid)
     return {"changed": changed, "suggested": suggested}
 
 
-class PreviewIn(BaseModel):
+class SelectionIn(BaseModel):
     row_ids: list[int]
+    selected: bool
+
+
+@router.post("/batches/{bid}/selection")
+def set_selection(bid: int, body: SelectionIn) -> dict[str, Any]:
+    with db.connect() as conn:
+        _editable(conn, bid)
+        if body.row_ids:
+            marks = ",".join("?" for _ in body.row_ids)
+            conn.execute(
+                f"UPDATE rows SET selected = ? WHERE batch_id = ? AND status != ? AND id IN ({marks})",
+                [int(body.selected), bid, pipeline.IMPORTED, *body.row_ids],
+            )
+        return pipeline.batch_selection(conn, bid)
+
+
+@router.post("/batches/{bid}/approve")
+def approve_batch(bid: int) -> dict[str, Any]:
+    with db.connect() as conn:
+        _batch_or_404(conn, bid)
+        if not pipeline.selected_rows(conn, bid):
+            raise HTTPException(422, "Nessuna riga selezionata da inviare")
+        pipeline.set_batch_status(conn, bid, pipeline.B_APPROVED)
+        return {"status": pipeline.B_APPROVED}
+
+
+@router.post("/batches/{bid}/reopen")
+def reopen_batch(bid: int) -> dict[str, Any]:
+    with db.connect() as conn:
+        _batch_or_404(conn, bid)
+        pipeline.set_batch_status(conn, bid, pipeline.B_REVIEW)
+        return {"status": pipeline.B_REVIEW}
 
 
 @router.post("/batches/{bid}/preview")
-async def preview(bid: int, body: PreviewIn) -> dict[str, Any]:
+async def preview(bid: int) -> dict[str, Any]:
+    """Anteprima del solo lotto (senza invio): l'invio avviene dalla coda dei lotti approvati."""
     meta = await _meta_or_none()
     with db.connect() as conn:
-        if not conn.execute("SELECT 1 FROM batches WHERE id = ?", (bid,)).fetchone():
-            raise HTTPException(404, "Lotto non trovato")
-        return await pipeline.preview_rows(conn, get_firefly(), bid, body.row_ids, meta)
+        _batch_or_404(conn, bid)
+        return await pipeline.preview_rows(conn, get_firefly(), pipeline.selected_rows(conn, bid), meta)
 
 
-@router.post("/batches/{bid}/import")
-async def do_import(bid: int, body: ImportIn) -> dict[str, int]:
+# ---------- Coda di invio: tutti i lotti approvati ----------
+
+
+@router.get("/pending")
+def pending() -> dict[str, Any]:
     with db.connect() as conn:
-        if not conn.execute("SELECT 1 FROM batches WHERE id = ?", (bid,)).fetchone():
-            raise HTTPException(404, "Lotto non trovato")
-        result = await pipeline.import_rows(conn, get_firefly(), bid, body.row_ids)
+        batches = db.to_dicts(
+            conn.execute("SELECT * FROM batches WHERE status IN (?, ?) ORDER BY id", (pipeline.B_APPROVED, pipeline.B_REVIEW)).fetchall()
+        )
+        for b in batches:
+            b["counts"] = pipeline.batch_counts(conn, b["id"])
+            b.update(pipeline.batch_selection(conn, b["id"]))
+    return {
+        "approved": [b for b in batches if b["status"] == pipeline.B_APPROVED],
+        "review": [b for b in batches if b["status"] == pipeline.B_REVIEW and b["selected"]],
+    }
+
+
+@router.get("/pending/count")
+def pending_count() -> dict[str, int]:
+    with db.connect() as conn:
+        return {"rows": len(pipeline.pending_rows(conn))}
+
+
+@router.post("/pending/preview")
+async def pending_preview() -> dict[str, Any]:
+    meta = await _meta_or_none()
+    with db.connect() as conn:
+        return await pipeline.preview_rows(conn, get_firefly(), pipeline.pending_rows(conn), meta)
+
+
+@router.post("/pending/import")
+async def pending_import(body: ImportIn) -> dict[str, int]:
+    with db.connect() as conn:
+        rows = pipeline.pending_rows(conn)
+        if body.row_ids is not None:
+            # si invia esattamente ciò che è stato mostrato in anteprima (e che è ancora in coda)
+            wanted = set(body.row_ids)
+            rows = [r for r in rows if r["id"] in wanted]
+        result = await pipeline.import_rows(conn, get_firefly(), rows)
     get_firefly().invalidate()  # categorie/tag nuovi
     return result
 
@@ -378,6 +462,9 @@ def patch_row(row_id: int, body: RowPatch) -> dict[str, Any]:
             raise HTTPException(404, "Riga non trovata")
         if r["status"] == pipeline.IMPORTED:
             raise HTTPException(409, "Riga già importata")
+        _editable(conn, r["batch_id"])
+        if "selected" in values:
+            values["selected"] = int(bool(values["selected"]))
         if values.get("status") == "new" and r["status"] in (pipeline.DUPLICATE, pipeline.POSSIBLE_DUP):
             values["status"] = pipeline.POSSIBLE_DUP if r["status"] == pipeline.POSSIBLE_DUP else pipeline.READY
         # i campi toccati a mano non vengono più cambiati dalle regole; svuotarli li restituisce alle regole
@@ -392,7 +479,9 @@ def patch_row(row_id: int, body: RowPatch) -> dict[str, Any]:
         if "category" in values:
             values["cat_source"] = "manual" if values["category"] else None
         db.update(conn, "rows", row_id, values)
-        return db.to_dict(conn.execute("SELECT * FROM rows WHERE id = ?", (row_id,)).fetchone())  # type: ignore[return-value]
+        out = db.to_dict(conn.execute("SELECT * FROM rows WHERE id = ?", (row_id,)).fetchone())
+        out["selected"] = pipeline.is_selected(out)  # type: ignore[index]
+        return out  # type: ignore[return-value]
 
 
 @router.get("/firefly/check")
